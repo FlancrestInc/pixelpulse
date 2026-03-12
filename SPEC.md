@@ -2,7 +2,7 @@
 ## Animated System Monitoring Dashboard
 
 **Project Specification & Architecture Guide**  
-Version 3.0 — March 2026
+Version 3.1 — March 2026
 
 ---
 
@@ -273,6 +273,8 @@ The Signal Library is the primary panel in edit mode. It slides in from the left
 
 Each signal entry shows its ID, human-readable label, current live value, signal type icon (gauge/rate/text/event/state), and adapter source. Clicking a signal entry highlights the pipe(s) it is routed through on the canvas.
 
+For signals with additional metadata — such as those sourced from the Prometheus adapter, which carry a PromQL query string, server URL, and host label — a **"Source details"** disclosure toggle is shown below the primary signal info. This is collapsed by default. Expanding it shows the metadata in a small secondary panel. This keeps the library uncluttered for simple signals while surfacing useful context for complex ones.
+
 To route a signal to a plot, the user drags from a signal entry in the library and drops it onto a plot. This creates a pipe and zones the plot. If the plot already has a building, a valve is automatically created on the pipe with default settings.
 
 New signals are added to the library by clicking an "Add Source" button at the bottom of the panel, which opens the adapter configuration flow.
@@ -281,10 +283,10 @@ New signals are added to the library by clicking an "Add Source" button at the b
 
 Adding a new source opens a step-by-step panel (not a full-screen modal — it overlays the edit mode canvas):
 
-1. **Choose adapter type** — system, weather, RSS feed, HTTP poll, webhook, shell, file watcher
-2. **Configure adapter** — type-specific form with only the required fields shown. Live preview of the signal value appears as soon as configuration is valid.
-3. **Name the signal** — assign a human-readable label
-4. **Done** — signal appears in the Signal Library under "Connected & available"
+1. **Choose adapter type** — system, weather, RSS feed, HTTP poll, webhook, shell, file watcher, Prometheus, or any loaded plugin
+2. **Configure adapter** — type-specific form with only the required fields shown. Live preview of the signal value appears as soon as configuration is valid. For Prometheus, this step shows a PromQL query editor with a test-query button that fires against the configured server and previews the result.
+3. **Name the signal(s)** — assign human-readable labels. For multi-host Prometheus queries using `label_as_suffix`, a preview of the generated signal IDs is shown.
+4. **Done** — signal(s) appear in the Signal Library under "Connected & available"
 
 For the `system` adapter, step 2 presents a list of available metrics with checkboxes, allowing multiple signals to be added in one flow.
 
@@ -344,28 +346,89 @@ Every piece of data in PixelPulse — regardless of its source — is normalized
 
 Scene bindings always reference a signal by its `id`. Port type compatibility is evaluated at connection time in the edit mode UI.
 
-### 5.3 Adapters
+### 5.3 Plugin Architecture
 
-An adapter is a Python module that collects data from a specific source and emits normalized signals into the signal engine.
+PixelPulse uses a **drop-in plugin model** for adapters. Any Python file placed in the `plugins/` directory that subclasses `AdapterBase` is automatically discovered and registered at startup — no code changes required. Built-in adapters follow the same contract and are loaded by the same discovery mechanism from `backend/adapters/builtin/`. There is no runtime distinction between a built-in adapter and a user-supplied plugin.
 
-#### system (built-in)
+#### Adapter Base Class Contract
 
-Uses the `psutil` library to read local machine metrics.
+Every adapter — built-in or plugin — must subclass `AdapterBase` and implement the following interface:
 
-| Metric ID | Description |
-|---|---|
-| `cpu_percent` | Overall CPU utilization as a gauge (0.0 to 1.0) |
-| `memory_used` | RAM usage as a gauge (used / total) |
-| `disk_used` | Disk usage for a given mount point |
-| `net_bytes_sent` | Network bytes sent, expressed as a rate |
-| `net_bytes_recv` | Network bytes received, expressed as a rate |
-| `cpu_temp` | CPU temperature as a gauge (normalized to 0–100°C range) |
-| `http_requests` | Stub counter for HTTP request rate (incrementable via webhook) |
-| `active_streams` | Active Jellyfin-style stream count (configurable via shell adapter) |
+```python
+class AdapterBase:
+    # Adapter type identifier used in config.yaml
+    adapter_type: str = "my_adapter"
 
-#### http_poll
+    # Optional: list of pip packages this adapter requires.
+    # The signal engine checks these at load time and logs a warning
+    # (with install instructions) if any are missing, rather than crashing.
+    requirements: list[str] = []
 
-Makes an HTTP GET request on a configurable interval and extracts a value from the JSON response using a JSONPath expression or regex. Optionally applies a transform expression to normalize the value. Supports configurable headers, method, and body for authenticated APIs.
+    def __init__(self, config: dict) -> None:
+        """Initialize from the adapter's config block."""
+
+    async def poll(self) -> list[Signal] | None:
+        """
+        Called by the signal engine on each polling interval.
+        Returns one or more Signal objects, or None on failure.
+        Must never raise — handle all exceptions internally.
+        """
+
+    @property
+    def interval(self) -> float:
+        """Polling interval in seconds."""
+
+    @property
+    def signal_ids(self) -> list[str]:
+        """
+        List of signal IDs this adapter may emit.
+        Used by the Signal Library to show available signals before the
+        first poll completes.
+        """
+```
+
+#### Plugin Discovery
+
+On startup, the signal engine scans two directories in order:
+
+1. `backend/adapters/builtin/` — first-party adapters shipped with PixelPulse
+2. `plugins/` — user-supplied plugins (gitignored by default)
+
+Any `.py` file containing a class that subclasses `AdapterBase` is registered. If two adapters declare the same `adapter_type`, the plugin directory wins (user plugins can override built-ins). Missing `requirements` are logged as warnings with suggested `pip install` commands; the adapter is skipped rather than crashing the engine.
+
+#### Built-in Adapters
+
+The following adapters ship with PixelPulse in `backend/adapters/builtin/`.
+
+---
+
+**system**
+
+Uses `psutil` to read local machine metrics. Zero configuration beyond selecting which metrics to expose.
+
+| Metric ID | Type | Description |
+|---|---|---|
+| `cpu_percent` | gauge | Overall CPU utilization (0.0–1.0) |
+| `memory_used` | gauge | RAM usage (used / total) |
+| `disk_used` | gauge | Disk usage for a configured mount point |
+| `net_bytes_sent` | rate | Network bytes sent |
+| `net_bytes_recv` | rate | Network bytes received |
+| `cpu_temp` | gauge | CPU temperature (normalized to 0–100°C range) |
+| `http_requests` | rate | HTTP request counter (incrementable via webhook) |
+| `active_streams` | gauge | Active stream count (configurable via shell adapter) |
+
+```yaml
+- id: cpu_load
+  adapter: system
+  metric: cpu_percent
+  interval: 2
+```
+
+---
+
+**http_poll**
+
+Makes an HTTP GET request on a configurable interval and extracts a value via JSONPath or regex. Supports optional transform expression, custom headers, method, and body for authenticated APIs.
 
 ```yaml
 - id: gas_price
@@ -376,9 +439,11 @@ Makes an HTTP GET request on a configurable interval and extracts a value from t
   transform: "value / 6.0"
 ```
 
-#### webhook
+---
 
-Registers an HTTP endpoint on the PixelPulse backend that external services can POST to. The payload is mapped to a signal using a configurable template.
+**webhook**
+
+Registers an HTTP POST endpoint on the PixelPulse backend. External services POST to it; the payload is mapped to a signal via a configurable template.
 
 ```yaml
 - id: deploy_event
@@ -387,7 +452,9 @@ Registers an HTTP endpoint on the PixelPulse backend that external services can 
   event_name: deploy_completed
 ```
 
-#### shell
+---
+
+**shell**
 
 Runs a shell command on a configurable interval and reads stdout as a signal value.
 
@@ -400,7 +467,9 @@ Runs a shell command on a configurable interval and reads stdout as a signal val
   max_value: 10
 ```
 
-#### file_watcher
+---
+
+**file_watcher**
 
 Watches a local file and emits its value on change. Three modes: `last_float`, `last_json`, `line_count`. Handles log rotation via inode tracking.
 
@@ -413,9 +482,11 @@ Watches a local file and emits its value on change. Three modes: `last_float`, `
   interval: 10
 ```
 
-#### rss_feed
+---
 
-Fetches one or more RSS feeds on a configurable interval and emits the most recent headline as a `text` signal. Maintains a rotating deque of formatted headlines. Strips HTML entities and tags.
+**rss_feed**
+
+Fetches one or more RSS feeds on a configurable interval. Maintains a rotating deque of formatted headlines. Emits as `text` type. Strips HTML entities and tags.
 
 ```yaml
 - id: news_ticker
@@ -427,9 +498,11 @@ Fetches one or more RSS feeds on a configurable interval and emits the most rece
   interval: 300
 ```
 
-#### weather
+---
 
-Fetches current weather conditions from the Open-Meteo API (no API key required). Location resolved by: explicit lat/lon → city name geocoding → IP geolocation fallback → hardcoded default. WMO weather codes mapped to human-readable descriptions. Emits as `text` type.
+**weather**
+
+Fetches current conditions from the Open-Meteo API (no API key required). Location resolved by: explicit lat/lon → city name geocoding → IP geolocation fallback → hardcoded default. WMO codes mapped to human-readable strings. Emits as `text` type.
 
 ```yaml
 - id: weather_text
@@ -438,15 +511,96 @@ Fetches current weather conditions from the Open-Meteo API (no API key required)
   interval: 600
 ```
 
-#### sky_driver
+---
 
-Internal adapter that emits a `sky_time` signal (0.0–1.0) to drive the frontend day/night cycle. Three modes: `clock`, `cycle`, `signal`.
+**sky_driver**
+
+Internal adapter that emits a `sky_time` signal (0.0–1.0) to drive the day/night cycle. Three modes: `clock`, `cycle`, `signal`.
 
 ```yaml
 sky_driver:
   mode: clock
   cycle_minutes: 10
 ```
+
+---
+
+#### First-Party Plugin: prometheus
+
+The Prometheus adapter ships in `plugins/builtin/prometheus.py` — it is included with the repo but treated as a plugin to keep the core adapter set minimal and illustrate the plugin model. It requires the `httpx` package (already a core dependency).
+
+The adapter queries a Prometheus server's HTTP API (`/api/v1/query`) using PromQL. Rather than one config block per signal, a single adapter block defines the server connection and lists all queries together, batching them into a single polling loop rather than separate HTTP connections per signal.
+
+**Basic configuration:**
+
+```yaml
+- adapter: prometheus
+  url: "http://localhost:9090"
+  interval: 5
+  queries:
+    - signal_id: cpu_load
+      query: '1 - avg(rate(node_cpu_seconds_total{mode="idle"}[1m]))'
+      type: gauge
+      label: "CPU Load"
+      max_value: 1.0
+
+    - signal_id: memory_used
+      query: '1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)'
+      type: gauge
+      label: "Memory Used"
+
+    - signal_id: net_bytes_recv
+      query: 'rate(node_network_receive_bytes_total{device="eth0"}[1m])'
+      type: rate
+      label: "Network In"
+      max_value: 125000000
+```
+
+**Multi-host configuration:**
+
+When monitoring multiple machines, use `label_as_suffix` to fan out a single query into per-host signals. The adapter reads the specified Prometheus label from each result series and appends it to the signal ID.
+
+```yaml
+- adapter: prometheus
+  url: "http://localhost:9090"
+  interval: 5
+  queries:
+    - signal_id: cpu_load
+      query: '1 - avg by (instance)(rate(node_cpu_seconds_total{mode="idle",job="servers"}[1m]))'
+      type: gauge
+      label: "CPU Load"
+      label_as_suffix: instance   # emits cpu_load_server1, cpu_load_server2, etc.
+```
+
+Each suffixed signal appears as an independent entry in the Signal Library and can be wired to its own building. The label value is appended after sanitizing to a valid signal ID character set (lowercase, underscores, no dots or colons).
+
+**Authentication:**
+
+Optional. Supports HTTP Basic Auth and Bearer token. Neither is required for Prometheus running on a private network.
+
+```yaml
+- adapter: prometheus
+  url: "https://prometheus.example.com"
+  auth:
+    type: basic          # basic | bearer
+    username: "user"     # basic only
+    password: "pass"     # basic only
+    token: "abc123"      # bearer only
+  interval: 5
+  queries: [ ... ]
+```
+
+**Normalization:**
+
+Each query entry accepts an optional `max_value` field. If provided, the raw Prometheus result is divided by `max_value` to produce a 0.0–1.0 normalized gauge. If omitted, the value is passed through as-is (appropriate for queries that already return normalized values, or for `rate` type signals where normalization happens at the valve layer).
+
+**Signal metadata:**
+
+Prometheus-sourced signals carry additional metadata that the system adapter signals do not: the PromQL query string, the Prometheus server URL, and (for multi-host signals) the host label value. This metadata is stored on the signal object and surfaced in the Signal Library and focus overlay behind a disclosure toggle labeled "Source details" (see Section 4.1).
+
+**Requirements:**
+
+The `prometheus` plugin has no additional pip dependencies beyond what PixelPulse already installs. It uses `httpx` (already a core dependency) to query the Prometheus HTTP API.
 
 ### 5.4 The Signal Engine
 
@@ -563,10 +717,12 @@ The GUI and config files are always in sync:
 | FastAPI | Web framework. Handles HTTP routes, WebSocket connections, REST API for edit mode, and serves static frontend files. |
 | uvicorn | ASGI server. |
 | psutil | System metrics (CPU, RAM, disk, network, temperature). |
-| httpx | Async HTTP client for `http_poll` and `weather` adapters. |
+| httpx | Async HTTP client for `http_poll`, `weather`, and `prometheus` adapters. |
 | PyYAML | Parses `config.yaml` and `layout.yaml`. |
 | jsonpath-ng | Evaluates JSONPath expressions in `http_poll` adapter. |
 | feedparser | Parses RSS feeds. |
+
+> **Plugin dependencies** are declared per-adapter via the `requirements` class attribute and are not listed in the core `requirements.txt`. If a plugin requires an additional package, the signal engine logs a clear install instruction on startup rather than crashing.
 
 ### 7.2 Frontend
 
@@ -614,6 +770,7 @@ pixelpulse/
 ├── backend/
 │   ├── main.py                  # FastAPI app entry point
 │   ├── signal_engine.py         # Core signal coordinator + history buffer
+│   ├── plugin_loader.py         # Discovers and registers adapter plugins
 │   ├── config_api.py            # REST endpoints for edit mode (read/write config)
 │   ├── config.yaml              # Adapter configuration (gitignored)
 │   ├── config.example.yaml      # Safe template
@@ -621,16 +778,21 @@ pixelpulse/
 │   ├── layout.default.yaml      # Starter city layout (shipped with repo)
 │   ├── config_loader.py         # Parses and validates both config files
 │   ├── adapters/
-│   │   ├── __init__.py
-│   │   ├── system.py
-│   │   ├── http_poll.py
-│   │   ├── webhook.py
-│   │   ├── shell.py
-│   │   ├── file_watcher.py
-│   │   ├── rss_feed.py
-│   │   ├── weather.py
-│   │   └── sky_driver.py
+│   │   ├── base.py              # AdapterBase class and Signal dataclass
+│   │   └── builtin/             # First-party adapters (loaded as plugins)
+│   │       ├── system.py
+│   │       ├── http_poll.py
+│   │       ├── webhook.py
+│   │       ├── shell.py
+│   │       ├── file_watcher.py
+│   │       ├── rss_feed.py
+│   │       ├── weather.py
+│   │       └── sky_driver.py
 │   └── requirements.txt
+│
+├── plugins/                     # User-supplied plugin adapters (gitignored)
+│   └── builtin/
+│       └── prometheus.py        # Ships with repo; treated as a plugin
 │
 ├── frontend/
 │   ├── index.html
@@ -697,9 +859,13 @@ pixelpulse/
 
 **`backend/main.py`** — Entry point. Instantiates FastAPI, mounts frontend static files, registers WebSocket route, webhook routes, and the config REST API routes. Initialises the signal engine on startup.
 
-**`backend/signal_engine.py`** — Core backend coordinator. Loads all adapters, schedules polling with exponential backoff, maintains current signal state, maintains rolling history buffer (10 min), broadcasts to WebSocket clients, and sends full state + history snapshot on new connection.
+**`backend/signal_engine.py`** — Core backend coordinator. Delegates adapter loading to `plugin_loader`, schedules polling with exponential backoff, maintains current signal state, maintains rolling history buffer (10 min), broadcasts to WebSocket clients, and sends full state + history snapshot on new connection.
 
-**`backend/config_api.py`** — REST API used exclusively by edit mode. Exposes endpoints to: list available signals, add/remove adapter config, read and write `layout.yaml`. All writes are atomic (write to temp file, rename).
+**`backend/plugin_loader.py`** — Scans `backend/adapters/builtin/` and `plugins/` for subclasses of `AdapterBase`. Registers discovered adapters by their `adapter_type`. Checks declared `requirements` against installed packages and logs warnings for missing dependencies. User plugins in `plugins/` take precedence over built-ins with the same `adapter_type`.
+
+**`backend/adapters/base.py`** — Defines the `AdapterBase` abstract class and the `Signal` dataclass. The single source of truth for the adapter contract.
+
+**`backend/config_api.py`** — REST API used exclusively by edit mode. Exposes endpoints to: list available signals, list loaded plugin types, add/remove adapter config, read and write `layout.yaml`. All writes are atomic (write to temp file, rename).
 
 **`frontend/edit_mode/edit_controller.js`** — Manages the mode switch animation, coordinates the opening/closing of edit mode panels, and triggers layout serialization on exit.
 
@@ -781,14 +947,69 @@ export class BuildingType {
 }
 ```
 
-### 9.4 Git Conventions
+### 9.5 Writing a Plugin Adapter
+
+A plugin is a single `.py` file dropped into the `plugins/` directory. It must define at least one class subclassing `AdapterBase`. The signal engine will discover and load it automatically on the next restart.
+
+Minimal working example — a plugin that reads a temperature sensor:
+
+```python
+from adapters.base import AdapterBase, Signal
+import logging
+
+logger = logging.getLogger(__name__)
+
+class TemperatureSensorAdapter(AdapterBase):
+    adapter_type = "temp_sensor"
+    requirements = []  # no extra packages needed
+
+    def __init__(self, config: dict) -> None:
+        self._signal_id = config["id"]
+        self._path = config.get("path", "/sys/class/thermal/thermal_zone0/temp")
+        self._interval = config.get("interval", 10)
+
+    @property
+    def interval(self) -> float:
+        return self._interval
+
+    @property
+    def signal_ids(self) -> list[str]:
+        return [self._signal_id]
+
+    async def poll(self) -> list[Signal] | None:
+        try:
+            raw = int(open(self._path).read().strip()) / 1000.0
+            value = min(raw / 100.0, 1.0)  # normalize to 0–1 assuming 100°C max
+            return [Signal(id=self._signal_id, type="gauge", value=value,
+                           label="Temperature", source="temp_sensor")]
+        except Exception as e:
+            logger.error(f"temp_sensor adapter failed: {e}")
+            return None
+```
+
+Corresponding config entry:
+```yaml
+- id: cpu_temp
+  adapter: temp_sensor
+  path: /sys/class/thermal/thermal_zone0/temp
+  interval: 10
+```
+
+Plugins that require additional packages should declare them:
+```python
+requirements = ["influxdb-client>=3.0"]
+```
+The engine will log a clear warning with the install command if the package is missing, rather than crashing.
+
+### 9.6 Git Conventions
 
 - **Commit messages** — Imperative present tense: 'Add windmill animation' not 'Added windmill animation'.
 - **Branch naming** — `feature/thing`, `fix/thing`, `chore/thing`.
 - **Commit scope** — One logical change per commit.
 - Do not commit `config.yaml` — use `config.example.yaml`.
 - `layout.yaml` is safe to commit (no credentials).
-- `.gitignore` includes: `__pycache__`, `.env`, `node_modules`, `*.pyc`, `config.yaml`.
+- `plugins/` is gitignored by default. If you want to version-control your own plugins, add them explicitly with `git add -f`.
+- `.gitignore` includes: `__pycache__`, `.env`, `node_modules`, `*.pyc`, `config.yaml`, `plugins/`.
 
 ---
 
@@ -878,7 +1099,28 @@ export class BuildingType {
 
 ---
 
-### Phase 6 — Edit Mode & Three-Tier UI *(Next)*
+### Phase 5c — Plugin Architecture & Prometheus Adapter *(Next — parallel with Phase 6)*
+
+**Goal:** Refactor the adapter system into a drop-in plugin model and ship the Prometheus adapter as the first first-party plugin.
+
+**Deliverables:**
+- `AdapterBase` abstract class and `Signal` dataclass extracted to `backend/adapters/base.py`
+- `plugin_loader.py`: scans `backend/adapters/builtin/` and `plugins/` for `AdapterBase` subclasses, registers by `adapter_type`, checks `requirements`, logs missing dependencies without crashing
+- All existing built-in adapters migrated to `backend/adapters/builtin/` and updated to subclass `AdapterBase`
+- `plugins/builtin/prometheus.py`: Prometheus HTTP API adapter with support for:
+  - Multiple PromQL queries per config block (batched into one poll loop)
+  - Per-query `max_value` normalization
+  - `label_as_suffix` multi-host fan-out (emits `signal_id_<host>` per series)
+  - Optional Basic Auth and Bearer token authentication
+  - Signal metadata (PromQL query, server URL, host label) passed through to signal object
+- Signal Library "Source details" disclosure toggle surfaces Prometheus metadata
+- Adapter config flow updated: Prometheus step includes PromQL editor with test-query button
+- `plugins/` directory added to `.gitignore`
+- Plugin authoring documentation added to `README.md`
+
+---
+
+### Phase 6 — Edit Mode & Three-Tier UI *(Planned)*
 
 **Goal:** The city is configurable through a graphical interface. The three-tier architecture is fully interactive.
 
@@ -980,6 +1222,10 @@ A simplified view for smaller screens.
 ### Community Style Packs
 
 Community-contributed building style variants as installable asset packs. No logic changes required to add new styles.
+
+### Community Plugin Directory
+
+A curated index of community-contributed adapter plugins — InfluxDB, Home Assistant, MQTT, Datadog, Uptime Kuma, Jellyfin, and so on. Each plugin is a single `.py` file users drop into their `plugins/` directory. The plugin authoring contract (Section 9.5) is designed to make this straightforward.
 
 ---
 
