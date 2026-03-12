@@ -1,0 +1,30 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+sky_driver:
+  mode: "clock"         # clock | cycle | signal
+  cycle_minutes: 10
+
+signals:
+  - id: "cpu_load"
+    adapter: "system"
+    metric: "cpu_percent"
+    interval: 2
+
+  - id: "memory_used"
+    adapter: "system"
+    metric: "memory_used"
+    interval: 5
+
+  - id: "weather_text"
+    adapter: "weather"
+    units: "fahrenheit"
+    interval: 600
+
+  - id: "news_ticker"
+    adapter: "rss_feed"
+    feeds:
+      - url: "https://example.com/rss.xml"
+        name: "Example Feed"
+    interval: 300

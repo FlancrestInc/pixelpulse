@@ -1,0 +1,1 @@
+// Building Picker panel behavior.

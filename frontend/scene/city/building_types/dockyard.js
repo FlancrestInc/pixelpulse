@@ -1,0 +1,1 @@
+// Dockyard building type placeholder.

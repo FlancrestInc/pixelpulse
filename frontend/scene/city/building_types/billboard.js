@@ -1,0 +1,1 @@
+// Billboard building type placeholder.

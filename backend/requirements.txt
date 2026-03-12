@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+psutil
+httpx
+PyYAML
+jsonpath-ng
+feedparser

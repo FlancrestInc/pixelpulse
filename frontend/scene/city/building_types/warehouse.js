@@ -1,0 +1,1 @@
+// Warehouse building type placeholder.

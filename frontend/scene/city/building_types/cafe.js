@@ -1,0 +1,1 @@
+// Cafe building type placeholder.
