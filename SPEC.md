@@ -2,7 +2,7 @@
 ## Animated System Monitoring Dashboard
 
 **Project Specification & Architecture Guide**  
-Version 3.1 — March 2026
+Version 3.2 — March 2026
 
 ---
 
@@ -109,13 +109,33 @@ In display mode, all edit UI disappears and only the city remains.
 
 ### 2.4 Mode Switch
 
-Transitioning between display mode and edit mode is a deliberate, animated event — not a checkbox toggle.
+Transitioning between display mode and edit mode is a deliberate, animated event — not a checkbox toggle. The total transition duration is 600ms in each direction. All timings use an `ease-in-out` curve unless otherwise noted.
 
-**Entering edit mode:** The city animates as if being "lifted." The underground pipe layer slides up into view from below; building plots glow to show they are interactive; source nodes appear at the bottom of the screen; the Signal Library panel slides in from the side. The sky dims slightly to indicate the city is paused.
+**Entering edit mode (600ms total):**
 
-**Exiting edit mode:** The pipe layer animates back underground; source nodes retract; the overlay UI fades; the sky brightens; the city resumes its normal animated state. The current layout is saved to the layout config file automatically on exit.
+| Time | Event |
+|---|---|
+| 0ms | Sky begins dimming to 60% brightness. City render loop pauses signal-driven animations (buildings freeze). Road traffic slows to a stop. |
+| 0–200ms | The entire city scene translates upward by 48px (the "lift"). |
+| 100–300ms | The pipe layer fades in from below — pipes and source nodes slide up from off-screen bottom, easing to their resting positions. |
+| 200–400ms | Building plots glow with a pulsing highlight to indicate interactivity. Connection port icons fade in on buildings. |
+| 300–500ms | The Signal Library panel slides in from the left edge (translateX from -320px to 0). |
+| 500–600ms | Edit mode is fully active. The wrench button is replaced by a "Done" button in the top-right corner. |
 
-The mode switch is triggered by a persistent button — a small wrench icon in the corner of the screen in display mode, or a prominent "Done" button in edit mode.
+**Exiting edit mode (600ms total):**
+
+| Time | Event |
+|---|---|
+| 0ms | Layout is serialized and sent to the backend via REST API (non-blocking — save happens in background). |
+| 0–200ms | Signal Library panel slides back out to the left. Valve panels and building pickers close immediately. |
+| 100–300ms | Plot highlights and port icons fade out. |
+| 200–400ms | Pipe layer and source nodes slide back down off-screen. |
+| 400–550ms | City scene translates back down 48px to its resting position. |
+| 500–600ms | Sky brightens back to 100%. City render loop resumes signal-driven animations. "Done" button replaced by wrench icon. |
+
+The mode switch is triggered by a persistent button — a small wrench icon (⚙) in the top-right corner of the screen in display mode, or a prominent "Done ✓" button in the same position in edit mode. The button is always visible and always clickable, even mid-transition (clicking during transition snaps immediately to the target state).
+
+If the backend save fails on exit, a small non-blocking toast notification appears: "Layout save failed — changes may not persist." The city resumes normally regardless.
 
 ---
 
@@ -195,7 +215,22 @@ Each building has multiple visual styles available in the building picker. Style
 
 Style variants are designed to be extensible: adding a new style requires only new sprite assets and a registry entry. No logic changes are required.
 
-### 3.7 Starter City
+### 3.7 Building Animation States
+
+Every building exists in one of four animation states at any given time. Implementers must handle all four.
+
+| State | Condition | Visual Behavior |
+|---|---|---|
+| **Idle** | Building placed, pipe connected, signal value is 0.0 | Building is static. No driven animation plays. Passive environmental animations (ambient sprite loops like grass, flags, steam wisps) continue at their base rate. |
+| **Active** | Building placed, pipe connected, signal value > 0.0 | Building's driven animation plays, scaled to signal value. e.g. Windmill spins faster as value increases. |
+| **Alert** | Signal value exceeds the pipe's configured alert threshold | Active animation continues. A red sinusoidal pulse overlay is added on top (1.2Hz, peak `rgba(255,60,60,0.55)`). Persists until value drops below threshold. |
+| **Disconnected** | Building placed, but backend is unreachable OR pipe connected to a signal that has not received a value within 2× its configured interval | Building is static. A yellow lightning bolt icon (⚡) is displayed centered above the building, matching the SimCity "no power" convention. Passive environmental animations continue. The icon disappears as soon as a valid signal value is received. |
+
+**No-pipe state:** A building placed with no pipe connected (zoned but not wired) shows no animation and no disconnected icon — it simply sits as a static decorative element. This is distinct from "disconnected" which implies a connection was expected but failed. In edit mode, the unconnected port glows to invite wiring.
+
+**Passive animations** are sprite-level idle loops built into the asset itself (e.g. a flag waving, smoke wisps, grass rustling). These always play regardless of signal state and are not driven by signal values. They must be implemented as looping `AnimatedSprite` frames on the sprite itself, not in the building's `update()` method.
+
+### 3.8 Starter City
 
 When PixelPulse is first launched with no existing layout config, a starter city is automatically generated. The starter city demonstrates the three primary display types and requires no configuration from the user.
 
@@ -209,15 +244,15 @@ When PixelPulse is first launched with no existing layout config, a starter city
 
 The starter city shows that PixelPulse is alive from the first load. Each building serves as a natural invitation: "what if I replaced this with my own data?" The city can be freely edited or cleared from edit mode.
 
-### 3.8 Roads & Traffic
+### 3.9 Roads & Traffic
 
 Roads run horizontally at two levels (road1 and road2). Car and pedestrian density and speed scale with `net_throughput` (derived from `net_bytes_recv`) if that signal is connected. If not connected, roads show gentle idle-state traffic. A calm network has slow, sparse traffic; a busy network has fast, dense traffic.
 
-### 3.9 Environment
+### 3.10 Environment
 
 - **Day/night cycle** — The sky transitions through dawn, day, dusk, and night. Three configurable modes: `clock` (follows real wall-clock time), `cycle` (fixed-duration loop for demo), or `signal` (maps another metric to sky position). Driven by the backend `sky_driver` adapter emitting a `sky_time` gauge signal (0.0–1.0).
 - **Weather** — Driven by the `weather` adapter using the Open-Meteo API (no API key required). Conditions displayed in a text building or the ticker. Optionally drives visual scene mood.
-- **Alert states** — When a signal crosses its configured alert threshold, the connected building flashes with a pulsing red overlay. Thresholds are configured per-pipe in the Pipe Layer (see Section 2.2).
+- **Alert states** — When a signal crosses its configured alert threshold, the connected building enters an alert state. The alert state persists for as long as the signal value remains above the threshold — it clears immediately when the value drops back below. Visual: a red overlay pulses on the building at 1.2Hz (0–100% opacity, sinusoidal), tinted `rgba(255, 60, 60, 0.55)` at peak. Any associated alert sound (Phase 8d) uses a separate cooldown of 60 seconds by default (configurable) to prevent rapid re-triggering — the visual continues regardless of sound cooldown.
 - **Kenney sprite integration** — Decorative scene elements (houses, trees, street furniture) use rendered sprites from the Kenney City Kit and Kenney Roads Kit, loaded from `assets/sprites/city_sprites.json`. Falls back gracefully to procedural graphics if the atlas file is not present.
 
 ### 3.10 Scene Layout
@@ -238,7 +273,49 @@ The city layout is divided into depth strips. Fixed environmental elements (sky,
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 3.11 Focus Mode
+#### Canvas Scaling
+
+The Pixi.js canvas always fills the browser window. On load and on every window resize event, the renderer is resized and the scene is rescaled to match. The scene uses a **fixed internal reference resolution of 1920×1080** — all positions, sizes, and layout coordinates are defined at this resolution, then scaled uniformly to fit the actual window size. This means the scene looks correct at any aspect ratio by letterboxing or pillarboxing with a neutral background color (`#1a1a2e`) if the window aspect ratio differs from 16:9.
+
+The resize handler debounces at 150ms to avoid thrashing the renderer on continuous drag-resize.
+
+```javascript
+// Pseudocode — resize handler
+window.addEventListener('resize', debounce(() => {
+  const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+  app.renderer.resize(window.innerWidth, window.innerHeight);
+  scene.scale.set(scale);
+  scene.position.set(
+    (window.innerWidth  - 1920 * scale) / 2,
+    (window.innerHeight - 1080 * scale) / 2
+  );
+}, 150));
+```
+
+#### Plot Grid
+
+Plots are fixed positions arranged in two horizontal rows within the scene.
+
+**Default configuration:** 6 plots per row. Configurable via `plots_per_row` in `layout.yaml` (range: 4–12).
+
+**Plot sizing:** Plot width is calculated as `1920 / (plots_per_row + 1)`, giving even spacing with margins on each side. At the default of 6 plots, each plot is approximately 274px wide at the reference resolution. At 10 plots, approximately 175px. Buildings are drawn to fill their plot width, scaling proportionally.
+
+**Plot rows:**
+- `main` row: sits between road1 and road2. Contains `plots_per_row` plots.
+- `mid` row: sits below road2. Contains `floor(plots_per_row / 2)` plots, interleaved with decorative trees and street furniture.
+- `ticker` row: a single full-width slot at the bottom of the scene, reserved for text-type buildings (Bank Ticker, Billboard). Optional — empty by default.
+
+**Plot ID convention:** Plot IDs are assigned at layout load time based on row and position.
+
+| Row | ID Format | Example (6-plot config) |
+|---|---|---|
+| Main row | `main_1` … `main_N` | `main_1` through `main_6` |
+| Mid row | `mid_1` … `mid_N` | `mid_1` through `mid_3` |
+| Ticker row | `ticker` | `ticker` |
+
+Plot IDs are stable — `main_3` always refers to the third slot in the main row regardless of what building is placed there. If `plots_per_row` changes, existing assignments are remapped left-to-right; surplus plots are cleared.
+
+### 3.12 Focus Mode
 
 Clicking any active building in display mode opens a **focus overlay** — a lightweight panel anchored to the building that shows:
 
@@ -252,13 +329,23 @@ Focus mode does not enter edit mode. It is a read-only view for investigating a 
 
 Focus mode requires the backend to maintain a rolling history buffer for each active signal (see Section 5.4).
 
-### 3.12 Building Tooltips
+### 3.13 Building Tooltips
 
 Hovering over any active building in the browser (outside of focus mode) shows a minimal tooltip with the building name, signal label, and current value. This is distinct from focus mode — tooltips are brief and disappear on mouse-out.
 
-### 3.13 LIVE / DEMO HUD Indicator
+### 3.14 LIVE / DEMO HUD Indicator
 
 A small HUD indicator in the top-right corner shows `● DEMO` (amber) when running with simulated data, and switches to `● LIVE` (blue) once a WebSocket connection is established and the first `sky_time` signal is received from the backend.
+
+### 3.15 Demo Mode & Backend Unavailability
+
+PixelPulse degrades gracefully when the backend is unreachable.
+
+**Full demo mode** (backend never connected): The starter city layout is rendered using simulated oscillating signals for all three starter buildings. The Signal Library is visible in edit mode but shows a "Backend unavailable — simulated data" banner. The user can still enter edit mode and interact with the UI, but adapter configuration changes cannot be saved. All buildings show their driven animations using the fake data. No disconnected icons are shown — demo mode is not a connection failure, it is an intentional fallback.
+
+**Lost connection** (backend was connected, then dropped): The WebSocket reconnects every 3 seconds. During the disconnected period, each building that was receiving a live signal transitions to the Disconnected state (⚡ icon) after 2× its signal's configured polling interval elapses with no update. The last-received value is retained for display in tooltips and focus overlay, marked as stale with a grey tint. When the connection is restored, the ⚡ icons clear and driven animations resume from the new values.
+
+**Edit mode during lost connection**: The user can still open edit mode and rearrange the layout. On edit mode exit, the save is queued and retried every 5 seconds until the backend responds. A persistent "Unsaved changes" indicator is shown until the save succeeds.
 
 ---
 
@@ -323,6 +410,7 @@ The valve panel shows a live preview of the current signal value on a mini gauge
 
 Every piece of data in PixelPulse — regardless of its source — is normalized into a Signal before it reaches the scene. The scene never knows where data came from.
 
+**Standard signal object:**
 ```json
 {
   "id": "cpu_load",
@@ -330,9 +418,41 @@ Every piece of data in PixelPulse — regardless of its source — is normalized
   "value": 0.72,
   "label": "CPU Load",
   "source": "system",
-  "timestamp": 1710000000
+  "timestamp": 1710000000,
+  "metadata": {}
 }
 ```
+
+The `metadata` field is optional and empty for most signals. Adapters that produce richer context (e.g. Prometheus) populate it:
+
+**Prometheus signal metadata example:**
+```json
+{
+  "id": "cpu_load_server1",
+  "type": "gauge",
+  "value": 0.61,
+  "label": "CPU Load — server1",
+  "source": "prometheus",
+  "timestamp": 1710000000,
+  "metadata": {
+    "promql": "1 - avg by (instance)(rate(node_cpu_seconds_total{mode=\"idle\"}[1m]))",
+    "prometheus_url": "http://localhost:9090",
+    "host_label": "server1"
+  }
+}
+```
+
+**Signal field definitions:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Unique signal identifier. Lowercase, underscores only. Must be stable across restarts. |
+| `type` | string | yes | One of: `gauge`, `rate`, `text`, `event`, `state` |
+| `value` | number or string | yes | Numeric for gauge/rate (float); string for text/event/state |
+| `label` | string | yes | Human-readable name shown in UI |
+| `source` | string | yes | Adapter type that produced this signal (e.g. `system`, `prometheus`) |
+| `timestamp` | integer | yes | Unix timestamp (seconds) of when the value was sampled |
+| `metadata` | object | no | Adapter-specific extended info. Always an object, never null. Empty `{}` if unused. |
 
 ### 5.2 Signal Types
 
@@ -665,6 +785,9 @@ signals:
 ### 6.3 layout.yaml Structure
 
 ```yaml
+display:
+  plots_per_row: 6          # range: 4–12. Default: 6.
+
 plots:
   - plot_id: main_1
     building: windmill
@@ -693,6 +816,20 @@ plots:
     valve:
       label: Weather
 ```
+
+**Plot entry field definitions:**
+
+| Field | Required | Description |
+|---|---|---|
+| `plot_id` | yes | Stable plot identifier (e.g. `main_1`, `mid_2`, `ticker`). Must match a valid plot position for the current `plots_per_row` value. |
+| `building` | no | Building type key (e.g. `windmill`, `water_tower`). If absent, plot is empty. |
+| `style` | no | Style key for the building. Defaults to the building's first listed style if absent. |
+| `signal` | no | Signal ID to connect. If absent, plot is unzoned (no pipe). |
+| `valve` | no | Valve configuration. Created with defaults if `signal` is set but `valve` is absent. |
+| `valve.range_min` | no | Raw signal value that maps to 0.0. Default: `0.0`. |
+| `valve.range_max` | no | Raw signal value that maps to 1.0. Default: `1.0`. |
+| `valve.alert_threshold` | no | Normalized value (0.0–1.0) that triggers alert state. Default: `0.85`. |
+| `valve.label` | no | Override display label. Defaults to the signal's own label. |
 
 ### 6.4 Starter Layout
 
@@ -871,18 +1008,339 @@ pixelpulse/
 
 **`frontend/edit_mode/pipe_renderer.js`** — Renders the visual pipe network over the city canvas in edit mode. Draws connection lines from source nodes to plot connection points, highlights pipes on hover, and handles drag-and-drop wiring interactions.
 
+Pipes use **right-angle routing** — all segments are strictly horizontal or vertical, with 90° bends, in the style of the Pipe Dream puzzle game and circuit board traces. The router uses a simple L-shaped or Z-shaped path (one bend for L, two bends for Z) chosen to minimize overlap with other pipes. Pipes are rendered as 4px wide filled rectangles in the signal's type color (see port type color table in Section 12). Bends are rendered as small filled squares at the corner point. Hovering any segment of a pipe highlights the entire pipe in white and shows the valve config button. Active (live) pipes animate a small moving "pulse" dot travelling along the route at a fixed speed (1 full traversal per 2 seconds) to indicate data flow.
+
 **`frontend/scene/city/plot_manager.js`** — Tracks the state of every plot (empty / zoned / active), renders the appropriate visual for each state, and communicates plot changes to the building layer.
 
 **`frontend/scene/shared/focus_overlay.js`** — Renders the focus mode panel anchored to a clicked building. Draws the sparkline from signal history data, formats the current value, and handles panel dismissal.
 
 ---
 
-## 9. Coding Standards
+## 9. WebSocket Message Reference
 
-### 9.1 Python (Backend)
+All WebSocket communication is JSON. The backend sends; the frontend listens. Messages are newline-delimited JSON objects. Each message has a `type` field that identifies its shape.
+
+### 9.1 Handshake Payload
+
+Sent once by the backend immediately after a client connects. Contains full current state.
+
+```json
+{
+  "type": "handshake",
+  "signals": {
+    "cpu_load": {
+      "id": "cpu_load",
+      "type": "gauge",
+      "value": 0.54,
+      "label": "CPU Load",
+      "source": "system",
+      "timestamp": 1710000000,
+      "metadata": {}
+    }
+  },
+  "history": {
+    "cpu_load": [
+      { "value": 0.48, "timestamp": 1709999400 },
+      { "value": 0.51, "timestamp": 1709999402 }
+    ]
+  },
+  "layout": { },
+  "config": { }
+}
+```
+
+| Field | Description |
+|---|---|
+| `signals` | Map of signal ID → current Signal object for all active signals. |
+| `history` | Map of signal ID → array of `{value, timestamp}` objects, oldest first. Up to 10 minutes of samples at the signal's poll interval. Only numeric signals (gauge, rate) have history entries. |
+| `layout` | Full contents of `layout.yaml` as a parsed object. Used by the frontend to reconstruct the city layout without a separate REST call. |
+| `config` | Subset of `config.yaml` safe to expose to the frontend: server port, sky_driver mode, signal IDs and labels. Credentials and adapter internals are never included. |
+
+### 9.2 Signal Update
+
+Sent whenever any signal value changes. Sent for every poll tick, not just on value change.
+
+```json
+{
+  "type": "signal",
+  "signal": {
+    "id": "cpu_load",
+    "type": "gauge",
+    "value": 0.61,
+    "label": "CPU Load",
+    "source": "system",
+    "timestamp": 1710000060,
+    "metadata": {}
+  }
+}
+```
+
+### 9.3 Adapter Status
+
+Sent when an adapter's health state changes — on first successful poll, on error, and on recovery.
+
+```json
+{
+  "type": "adapter_status",
+  "adapter_id": "cpu_load",
+  "status": "ok",
+  "message": null
+}
+```
+
+```json
+{
+  "type": "adapter_status",
+  "adapter_id": "news_ticker",
+  "status": "error",
+  "message": "Connection refused: feeds.bbci.co.uk"
+}
+```
+
+| `status` value | Meaning |
+|---|---|
+| `ok` | Adapter polled successfully. |
+| `error` | Last poll failed. `message` contains the error string. |
+| `recovering` | Adapter failed but is retrying with backoff. |
+| `missing_deps` | Adapter was skipped at load time due to missing `requirements`. |
+
+The frontend uses `adapter_status` messages to drive the ⚡ disconnected icon on buildings whose signal comes from the affected adapter.
+
+### 9.4 Layout Saved Confirmation
+
+Sent by the backend after successfully writing `layout.yaml` in response to a REST save request.
+
+```json
+{
+  "type": "layout_saved",
+  "timestamp": 1710000120
+}
+```
+
+If the save fails, the backend sends:
+
+```json
+{
+  "type": "layout_save_failed",
+  "error": "Permission denied: /backend/layout.yaml"
+}
+```
+
+### 9.5 Server Info
+
+Sent once as part of the handshake (embedded in the `config` field), and also available via REST. Not a standalone message type.
+
+---
+
+## 10. REST API Reference
+
+All endpoints are served by `backend/config_api.py` under the `/api` prefix. All request and response bodies are JSON. All endpoints return HTTP 200 on success or an appropriate 4xx/5xx with a `{"error": "message"}` body on failure. Writes are atomic (write to temp file, then rename).
+
+These endpoints are used exclusively by the edit mode frontend. They are not intended as a public API.
+
+### 10.1 GET /api/signals
+
+Returns all currently active signals and their latest values.
+
+**Response:**
+```json
+{
+  "signals": [
+    {
+      "id": "cpu_load",
+      "type": "gauge",
+      "value": 0.54,
+      "label": "CPU Load",
+      "source": "system",
+      "timestamp": 1710000000,
+      "metadata": {}
+    }
+  ]
+}
+```
+
+### 10.2 GET /api/adapters
+
+Returns all loaded adapter types available for configuration.
+
+**Response:**
+```json
+{
+  "adapters": [
+    { "type": "system",     "label": "System Metrics",  "builtin": true  },
+    { "type": "weather",    "label": "Weather",          "builtin": true  },
+    { "type": "rss_feed",   "label": "RSS Feed",         "builtin": true  },
+    { "type": "http_poll",  "label": "HTTP Poll",        "builtin": true  },
+    { "type": "webhook",    "label": "Webhook",          "builtin": true  },
+    { "type": "shell",      "label": "Shell Command",    "builtin": true  },
+    { "type": "file_watcher","label": "File Watcher",    "builtin": true  },
+    { "type": "prometheus", "label": "Prometheus",       "builtin": false }
+  ]
+}
+```
+
+### 10.3 POST /api/signals
+
+Adds a new signal adapter entry to `config.yaml` and starts the adapter immediately (no restart required).
+
+**Request body:** A valid signal config block matching the adapter's schema.
+```json
+{
+  "id": "my_metric",
+  "adapter": "http_poll",
+  "url": "https://api.example.com/metric",
+  "json_path": "$.value",
+  "interval": 30
+}
+```
+
+**Response:**
+```json
+{ "ok": true, "id": "my_metric" }
+```
+
+**Errors:** `400` if the config block is invalid or the ID already exists. `422` if required fields are missing for the adapter type.
+
+### 10.4 DELETE /api/signals/{signal_id}
+
+Removes a signal adapter from `config.yaml` and stops its polling loop. Any pipes in `layout.yaml` referencing this signal ID are also removed.
+
+**Response:**
+```json
+{ "ok": true, "removed_pipes": ["main_3", "mid_1"] }
+```
+
+`removed_pipes` lists the plot IDs whose pipe was removed as a side effect.
+
+### 10.5 GET /api/layout
+
+Returns the current contents of `layout.yaml` as a parsed object.
+
+**Response:**
+```json
+{
+  "display": { "plots_per_row": 6 },
+  "plots": [ { "plot_id": "main_1", "building": "windmill", "..." : "..." } ]
+}
+```
+
+### 10.6 PUT /api/layout
+
+Replaces the entire contents of `layout.yaml`. Called by the frontend on edit mode exit.
+
+**Request body:** Full layout object in the same shape as `GET /api/layout` response.
+
+**Response:**
+```json
+{ "ok": true }
+```
+
+On success, the backend also broadcasts a `layout_saved` WebSocket message to all connected clients.
+
+**Errors:** `400` if the layout object fails validation (unknown plot IDs, unknown building types, invalid valve values). The existing `layout.yaml` is not modified on error.
+
+### 10.7 POST /api/prometheus/test
+
+Test-fires a PromQL query against a Prometheus server and returns the result. Used by the adapter configuration flow's "Test Query" button.
+
+**Request body:**
+```json
+{
+  "url": "http://localhost:9090",
+  "query": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[1m]))",
+  "auth": { "type": "basic", "username": "user", "password": "pass" }
+}
+```
+
+`auth` is optional.
+
+**Response (success):**
+```json
+{ "ok": true, "value": 0.42, "raw": { "...": "full Prometheus API response" } }
+```
+
+**Response (query error):**
+```json
+{ "ok": false, "error": "bad_data: 1:5: parse error: unexpected identifier" }
+```
+
+**Response (connection error):**
+```json
+{ "ok": false, "error": "Connection refused: localhost:9090" }
+```
+
+---
+
+## 11. Port Type Reference
+
+### 11.1 Port Type Compatibility Matrix
+
+This is the authoritative compatibility table. A signal type is compatible with a port type if it appears in that port's "Accepts" column. Connection attempts with incompatible types are rejected in the UI with a shake animation and tooltip.
+
+| Port Type | Accepts Signal Types | Pipe Color | Icon |
+|---|---|---|---|
+| `gauge` | `gauge` | `#4fc3f7` (light blue) | Dial 🔵 |
+| `rate` | `rate`, `gauge` | `#81c784` (green) | Speedometer 🟢 |
+| `text` | `text` | `#ffb74d` (amber) | Scroll 🟠 |
+| `event` | `event` | `#ce93d8` (purple) | Lightning ⚡ |
+| `state` | `state` | `#ef9a9a` (red) | Traffic light 🔴 |
+
+The pipe color is used for pipe rendering in edit mode. The icon appears on building connection points and on zoned plot pylons.
+
+### 11.2 Building-to-Port Mapping
+
+The authoritative mapping of building type keys (used in `layout.yaml`) to their port type and style keys.
+
+| Building Key | Port Type | Style Keys |
+|---|---|---|
+| `windmill` | `gauge` | `classic_wood`, `modern_steel`, `rustic_stone` |
+| `power_station` | `gauge` | `industrial_brick`, `concrete_modern`, `old_factory` |
+| `water_tower` | `gauge` | `classic_wood_leg`, `steel_municipal`, `painted_vintage` |
+| `warehouse` | `gauge` | `corrugated_steel`, `brick_loading_dock`, `timber_barn` |
+| `server_tower` | `gauge` | `glass_office`, `brutalist_concrete`, `retro_mainframe` |
+| `dockyard` | `gauge` | `industrial_port`, `small_marina`, `river_wharf` |
+| `cafe` | `rate` | `corner_diner`, `french_bistro`, `tech_startup` |
+| `construction_yard` | `rate` | `earthworks`, `high_rise_steel`, `road_crew` |
+| `swimming_pool` | `rate` | `municipal_outdoor`, `rooftop_luxury`, `community_rec` |
+| `bank_ticker` | `text` | `art_deco_bank`, `modern_finance`, `roadside_marquee` |
+| `bus_stop` | `text` | `classic_shelter`, `minimal_post`, `retro_covered` |
+| `billboard` | `text` | `classic_billboard`, `led_display`, `painted_wall` |
+| `data_vault` | `event` | `secure_bunker`, `server_farm`, `underground_vault` |
+| `drive_in` | `event` | `classic_50s`, `modern_multiplex`, `rooftop_cinema` |
+| `auth_gate` | `state` | `security_booth`, `railway_crossing`, `castle_gate` |
+| `city_park` | *(none)* | `manicured_formal`, `scrubby_urban`, `zen_garden` |
+
+### 11.3 Building Animation Details
+
+For each building, the specific animation behavior at each signal value level.
+
+| Building | Signal=0.0 (Idle) | Signal=0.5 (Mid) | Signal=1.0 (Full) |
+|---|---|---|---|
+| Windmill | Stationary blades | Moderate spin (~1 rev/3s) | Fast spin (~1 rev/0.8s) |
+| Power Station | No smoke | Moderate smoke column | Dense, fast smoke billows |
+| Water Tower | Tank visually empty | Tank half-filled | Tank full, overflow drips |
+| Warehouse | Shutter fully closed | Shutter half-open | Shutter fully open, activity visible |
+| Server Tower | All windows dark | Half windows lit, slow blink | All windows lit, rapid blink, load bar full |
+| Dockyard | No crane movement | Crane swings slowly, occasional container | Crane active, containers stacking |
+| Café | Dark neon sign, no foot traffic | Sign lit, occasional pedestrian enters | Sign flashing, steady stream of pedestrians |
+| Construction Yard | No movement | One crane active, occasional dig | Multiple cranes active, busy digging |
+| Swimming Pool | Empty pool (no swimmers) | A few swimmers, gentle splashing | Crowded pool, active splashing |
+| Bank Ticker | Ticker paused, last text frozen | Ticker scrolling at normal speed | — (text speed does not scale with signal) |
+| Bus Stop | Sign blank | Sign shows current text value | — (no visual scaling, text is binary) |
+| Billboard | Display blank | Display showing current text | — (no visual scaling) |
+| Data Vault | No activity | — (event-driven, no midpoint state) | Truck present, unloading animation |
+| Drive-In | Screen dark, no cars | — (event-driven, no midpoint state) | Screen lit, cars in lot |
+| Auth Gate | Barrier down, no alarm | — (state-driven) | Barrier up (OK) or barrier down + alarm (failure state) |
+| City Park | Residents stroll peacefully | — (no signal, always idle) | — |
+
+---
+
+## 12. Coding Standards
+
+### 12.1 Python (Backend)
 
 - **Style** — PEP 8 throughout. Use ruff for linting.
-- **Async** — All I/O operations must be async. No blocking calls on the main thread.
+- **Async** — All I/O operations must be async. No blocking calls on the main thread. This is the most common plugin pitfall: a synchronous blocking call inside an `async def poll()` will stall the entire event loop and freeze all signal updates. Any blocking operation (subprocess, blocking file I/O, synchronous third-party library) must be wrapped in `asyncio.run_in_executor()`.
 - **Type hints** — All function signatures must have type annotations.
 - **Docstrings** — Every module, class, and public function gets a one-line docstring minimum.
 - **Error handling** — Adapter failures must never crash the signal engine. Each adapter runs in a `try/except` loop with exponential backoff (initial 2s, max 30s).
@@ -900,7 +1358,7 @@ async def poll(self) -> Optional[Signal]:
         return None
 ```
 
-### 9.2 JavaScript (Frontend)
+### 12.2 JavaScript (Frontend)
 
 - **Modules** — ES module syntax (`import`/`export`) throughout. No global variables.
 - **No framework** — Vanilla JS + Pixi.js only.
@@ -928,7 +1386,7 @@ export class Windmill {
 }
 ```
 
-### 9.3 Building Type Contract
+### 12.3 Building Type Contract
 
 Every building type module must export a class that conforms to this interface:
 
@@ -947,7 +1405,7 @@ export class BuildingType {
 }
 ```
 
-### 9.5 Writing a Plugin Adapter
+### 12.4 Writing a Plugin Adapter
 
 A plugin is a single `.py` file dropped into the `plugins/` directory. It must define at least one class subclassing `AdapterBase`. The signal engine will discover and load it automatically on the next restart.
 
@@ -1001,7 +1459,7 @@ requirements = ["influxdb-client>=3.0"]
 ```
 The engine will log a clear warning with the install command if the package is missing, rather than crashing.
 
-### 9.6 Git Conventions
+### 12.5 Git Conventions
 
 - **Commit messages** — Imperative present tense: 'Add windmill animation' not 'Added windmill animation'.
 - **Branch naming** — `feature/thing`, `fix/thing`, `chore/thing`.
@@ -1013,7 +1471,7 @@ The engine will log a clear warning with the install command if the package is m
 
 ---
 
-## 10. Build Phases
+## 13. Build Phases
 
 ### Phase 1 — Render ✅
 
@@ -1199,7 +1657,7 @@ The engine will log a clear warning with the install command if the package is m
 
 ---
 
-## 11. Future Ideas & Parking Lot
+## 14. Future Ideas & Parking Lot
 
 ### Additional Scene Types
 
