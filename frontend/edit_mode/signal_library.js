@@ -1,0 +1,1 @@
+// Signal Library panel behavior.
