@@ -67,7 +67,7 @@ export class SignalBus {
 
   onLayoutChange(cb) {
     this.layoutListeners.add(cb);
-    cb(this.layout);
+    if (Array.isArray(this.layout?.plots) && this.layout.plots.length > 0) cb(this.layout);
     return () => this.layoutListeners.delete(cb);
   }
 
