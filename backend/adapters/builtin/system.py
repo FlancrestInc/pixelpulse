@@ -27,8 +27,6 @@ class SystemAdapter(AdapterBase):
         "net_bytes_sent",
         "net_bytes_recv",
         "cpu_temp",
-        "http_requests",
-        "active_streams",
     ]
 
     def __init__(self, config: dict[str, Any]) -> None:
@@ -131,34 +129,6 @@ class SystemAdapter(AdapterBase):
                         label="CPU Temperature",
                         source=self.adapter_type,
                         timestamp=now,
-                    )
-                )
-
-            if "http_requests" in self.signal_ids:
-                signals.append(
-                    Signal(
-                        id="http_requests",
-                        type="rate",
-                        value=float(self.config.get("http_requests", 0.0)),
-                        label="HTTP Requests",
-                        source=self.adapter_type,
-                        timestamp=now,
-                    )
-                )
-
-            if "active_streams" in self.signal_ids:
-                active_streams = float(self.config.get("active_streams", 0.0))
-                max_streams = float(self.config.get("max_streams", 1.0))
-                normalized = 0.0 if max_streams <= 0 else min(max(active_streams / max_streams, 0.0), 1.0)
-                signals.append(
-                    Signal(
-                        id="active_streams",
-                        type="gauge",
-                        value=normalized,
-                        label="Active Streams",
-                        source=self.adapter_type,
-                        timestamp=now,
-                        metadata={"raw_active_streams": active_streams, "max_streams": max_streams},
                     )
                 )
 
