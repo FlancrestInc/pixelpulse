@@ -75,10 +75,12 @@ function fitScene() {
   const w = window.innerWidth;
   const h = window.innerHeight;
   const scale = Math.min(w / REF_WIDTH, h / REF_HEIGHT);
+  const cityOffsetY = world.y - world.baseY;
+  const centeredY = Math.floor((h - REF_HEIGHT * scale) * 0.5);
   world.scale.set(scale);
   world.x = Math.floor((w - REF_WIDTH * scale) * 0.5);
-  world.y = Math.floor((h - REF_HEIGHT * scale) * 0.5);
-  world.baseY = world.y;
+  world.baseY = centeredY;
+  world.y = centeredY + cityOffsetY;
 }
 
 document.addEventListener('layout-updated', () => {
