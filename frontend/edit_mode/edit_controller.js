@@ -126,10 +126,6 @@ export class EditController {
   /** Enter edit mode with 600ms ease-in-out timeline. */
   enterEditMode() {
     if (this.mode === 'edit') return;
-    this.cityScene.plotManager.setEditMode(true);
-    this.signalLibrary.setEditMode(true);
-    this.buildingPicker.setEditMode(true);
-    this.valvePanel.setEditMode(true);
     this._animateTo('edit');
   }
 
