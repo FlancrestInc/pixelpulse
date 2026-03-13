@@ -4,6 +4,8 @@ export class SignalBus {
     this.listeners = new Map();
     this.anyListeners = new Set();
     this.modeListeners = new Set();
+    this.layoutListeners = new Set();
+    this.layoutSaveListeners = new Set();
     this.socket = null;
     this.reconnectTimer = null;
     this.demoTimer = null;
@@ -61,6 +63,17 @@ export class SignalBus {
 
   getMode() {
     return this.liveReady ? 'live' : 'demo';
+  }
+
+  onLayoutChange(cb) {
+    this.layoutListeners.add(cb);
+    cb(this.layout);
+    return () => this.layoutListeners.delete(cb);
+  }
+
+  onLayoutSaveStatus(cb) {
+    this.layoutSaveListeners.add(cb);
+    return () => this.layoutSaveListeners.delete(cb);
   }
 
   _emitMode() {
@@ -178,6 +191,7 @@ export class SignalBus {
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'handshake') {
       this.layout = msg.layout ?? { plots: [] };
+      this.layoutListeners.forEach((cb) => cb(this.layout));
       const signals = msg.signals ?? {};
       const hasSkyTime = Object.values(signals).some((signal) => signal?.id === 'sky_time');
       if (hasSkyTime) {
@@ -196,6 +210,20 @@ export class SignalBus {
 
     if (msg.type === 'signal_update') {
       (msg.signals ?? []).forEach((signal) => this._emitSignal(signal));
+      return;
+    }
+
+    if (msg.type === 'layout_saved') {
+      if (msg.layout) {
+        this.layout = msg.layout;
+        this.layoutListeners.forEach((cb) => cb(this.layout));
+      }
+      this.layoutSaveListeners.forEach((cb) => cb({ ok: true }));
+      return;
+    }
+
+    if (msg.type === 'layout_save_failed') {
+      this.layoutSaveListeners.forEach((cb) => cb({ ok: false }));
     }
   }
 

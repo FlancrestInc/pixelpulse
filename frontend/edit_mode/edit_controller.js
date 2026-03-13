@@ -2,13 +2,15 @@
  * Coordinates edit-mode entry/exit transitions and panel state.
  */
 export class EditController {
-  constructor({ cityScene, signalLibrary, buildingPicker, valvePanel, layoutSerializer, world }) {
+  constructor({ cityScene, signalLibrary, buildingPicker, valvePanel, layoutSerializer, pipeRenderer, world, signalBus }) {
     this.cityScene = cityScene;
     this.signalLibrary = signalLibrary;
     this.buildingPicker = buildingPicker;
     this.valvePanel = valvePanel;
     this.layoutSerializer = layoutSerializer;
+    this.pipeRenderer = pipeRenderer;
     this.world = world;
+    this.signalBus = signalBus;
     this.mode = 'display';
     this.transition = null;
     this.targetMode = null;
@@ -54,9 +56,15 @@ export class EditController {
 
   _showToast(message) {
     this.toast.textContent = message;
+    this.toast.style.background = 'rgba(29,34,48,.95)';
     this.toast.style.display = 'block';
     window.clearTimeout(this.toastTimer);
     this.toastTimer = window.setTimeout(() => { this.toast.style.display = 'none'; }, 2200);
+  }
+
+  /** Show a save failure toast in the shared save-status location. */
+  showSaveFailedToast() {
+    this._showToast('Layout save failed — changes may not persist.');
   }
 
   _setComponentEditState() {
@@ -66,6 +74,16 @@ export class EditController {
     this.signalLibrary.setEditMode(isEditMode);
     this.buildingPicker.setEditMode(isEditMode);
     this.valvePanel.setEditMode(isEditMode);
+    this.pipeRenderer.setEditMode(isEditMode);
+  }
+
+  /** Show a success toast in the shared save-status location. */
+  showSavedToast() {
+    this.toast.textContent = '✓ Saved';
+    this.toast.style.background = 'rgba(42,106,68,.95)';
+    this.toast.style.display = 'block';
+    window.clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => { this.toast.style.display = 'none'; }, 2000);
   }
 
   _snapToTarget() {
@@ -141,7 +159,7 @@ export class EditController {
     try {
       await this.layoutSerializer.save();
     } catch (_err) {
-      this._showToast('Layout save failed — changes may not persist.');
+      this.showSaveFailedToast();
     }
     this._animateTo('display');
   }
