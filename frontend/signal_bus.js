@@ -158,7 +158,7 @@ export class SignalBus {
       this._emitSignal({
         id: 'sky_time',
         type: 'gauge',
-        value: ((t % 24) / 24),
+        value: ((t % 600) / 600),
         label: 'Sky Time',
         source: 'demo',
         timestamp: Date.now() / 1000,
@@ -179,6 +179,11 @@ export class SignalBus {
     if (msg.type === 'handshake') {
       this.layout = msg.layout ?? { plots: [] };
       const signals = msg.signals ?? {};
+      const hasSkyTime = Object.values(signals).some((signal) => signal?.id === 'sky_time');
+      if (hasSkyTime) {
+        this.liveReady = true;
+        this._emitMode();
+      }
       Object.values(signals).forEach((signal) => this._emitSignal(signal));
       this._readPollIntervals(msg.config);
       return;
