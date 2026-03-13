@@ -90,8 +90,30 @@ async def delete_adapter(signal_id: str) -> dict[str, Any]:
     if not isinstance(signals, list):
         raise HTTPException(status_code=400, detail="config.yaml signals must be a list")
     config["signals"] = [entry for entry in signals if not (isinstance(entry, dict) and entry.get("id") == signal_id)]
+
+    layout = await _read_yaml(LAYOUT_PATH)
+    if layout is None:
+        layout = {"plots": []}
+    if not isinstance(layout, dict):
+        raise HTTPException(status_code=400, detail="layout.yaml must contain a mapping")
+    plots = layout.get("plots", [])
+    if not isinstance(plots, list):
+        raise HTTPException(status_code=400, detail="layout.yaml plots must be a list")
+
+    removed_pipes = [
+        str(plot.get("plot_id"))
+        for plot in plots
+        if isinstance(plot, dict) and plot.get("signal") == signal_id and plot.get("plot_id") is not None
+    ]
+    layout["plots"] = [
+        plot
+        for plot in plots
+        if not (isinstance(plot, dict) and plot.get("signal") == signal_id)
+    ]
+
     await _atomic_write_yaml(CONFIG_PATH, config)
-    return {"status": "ok", "signals": config["signals"]}
+    await _atomic_write_yaml(LAYOUT_PATH, layout)
+    return {"status": "ok", "signals": config["signals"], "removed_pipes": removed_pipes}
 
 
 @router.get("/layout")
@@ -124,13 +146,21 @@ async def test_prometheus_query(request: PrometheusTestRequest) -> dict[str, Any
             response = await client.get(request.url.rstrip("/") + "/api/v1/query", params={"query": request.query})
             response.raise_for_status()
         payload = response.json()
-        return {
-            "status": payload.get("status", "error"),
-            "data": payload.get("data", {}),
-            "error": payload.get("error"),
-        }
+        result_list = payload.get("data", {}).get("result", [])
+        value = None
+        if isinstance(result_list, list) and result_list:
+            first_result = result_list[0]
+            if isinstance(first_result, dict):
+                raw_value = first_result.get("value")
+                if isinstance(raw_value, list) and len(raw_value) > 1:
+                    try:
+                        value = float(raw_value[1])
+                    except (TypeError, ValueError):
+                        value = None
+
+        return {"ok": True, "value": value, "raw": payload}
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Prometheus test query failed: {exc}") from exc
+        return {"ok": False, "error": f"Prometheus test query failed: {exc}"}
 
 
 async def _read_yaml(path: Path) -> Any:
