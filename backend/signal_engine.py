@@ -141,7 +141,8 @@ class SignalEngine:
                     "metadata": signal.metadata,
                 }
 
-        await self._broadcast({"type": "signal_update", "signals": [self.current_signals[s.id] for s in signals]})
+        for signal in signals:
+            await self._broadcast({"type": "signal", "signal": self.current_signals[signal.id]})
 
     async def _set_adapter_status(self, adapter_key: str, adapter_type: str, status: str, message: str = "") -> None:
         current = self.adapter_statuses.get(adapter_key, {})
@@ -170,9 +171,43 @@ class SignalEngine:
         return {
             "type": "handshake",
             "signals": self.current_signals,
-            "config": self.config,
+            "config": self._safe_config(),
             "layout": self.layout,
             "adapter_statuses": self.adapter_statuses,
+        }
+
+    def _safe_config(self) -> dict[str, Any]:
+        """Return a frontend-safe subset of backend config with sensitive fields stripped."""
+        safe_signals: list[dict[str, Any]] = []
+        for signal in self.config.get("signals", []):
+            if not isinstance(signal, dict):
+                continue
+            safe_signals.append(
+                {
+                    "id": signal.get("id"),
+                    "adapter": signal.get("adapter"),
+                    "interval": signal.get("interval"),
+                }
+            )
+
+        safe_sky_driver: dict[str, Any] | None = None
+        sky_driver = self.config.get("sky_driver")
+        if isinstance(sky_driver, dict):
+            safe_sky_driver = {
+                "id": sky_driver.get("id"),
+                "adapter": sky_driver.get("adapter") or "sky_driver",
+                "interval": sky_driver.get("interval"),
+            }
+
+        server = self.config.get("server")
+        port = 8000
+        if isinstance(server, dict):
+            port = server.get("port", 8000)
+
+        return {
+            "sky_driver": safe_sky_driver,
+            "signals": safe_signals,
+            "server": {"port": port},
         }
 
     def _adapter_key(self, adapter_type: str, config: dict[str, Any]) -> str:

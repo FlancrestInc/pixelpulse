@@ -184,6 +184,11 @@ export class SignalBus {
       return;
     }
 
+    if (msg.type === 'signal') {
+      this._emitSignal(msg.signal);
+      return;
+    }
+
     if (msg.type === 'signal_update') {
       (msg.signals ?? []).forEach((signal) => this._emitSignal(signal));
     }
