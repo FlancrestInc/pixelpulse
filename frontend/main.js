@@ -82,7 +82,7 @@ function fitScene() {
 }
 
 document.addEventListener('layout-updated', () => {
-  cityScene.applyLayout(layoutSerializer.serialize().plots);
+  cityScene.applyLayout(layoutSerializer.serializeAll().plots);
   signalLibrary.render();
 });
 
@@ -93,7 +93,7 @@ document.addEventListener('pipe-menu', (event) => {
   menu.innerHTML = '<button id="cfg">Configure</button><button id="rm">Remove pipe</button>';
   document.body.appendChild(menu);
   menu.querySelector('#cfg').onclick = () => { document.dispatchEvent(new CustomEvent('pipe-selected', { detail: { plotId, x, y } })); menu.remove(); };
-  menu.querySelector('#rm').onclick = () => { layoutSerializer.removePipe(plotId); cityScene.applyLayout(layoutSerializer.serialize().plots); signalLibrary.render(); menu.remove(); };
+  menu.querySelector('#rm').onclick = () => { layoutSerializer.removePipe(plotId); cityScene.applyLayout(layoutSerializer.serializeAll().plots); signalLibrary.render(); menu.remove(); };
   window.setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
 });
 

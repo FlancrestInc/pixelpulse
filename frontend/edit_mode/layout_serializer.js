@@ -106,6 +106,18 @@ export class LayoutSerializer {
     return { plots };
   }
 
+  /** Create a full layout payload including empty plots for scene state updates. */
+  serializeAll() {
+    const plots = [...this.plotMap.values()].map((plot) => ({
+      plot_id: plot.plot_id,
+      signal: plot.signal ?? undefined,
+      building: plot.building ?? undefined,
+      style: plot.style ?? undefined,
+      valve: plot.valve ?? undefined,
+    }));
+    return { plots };
+  }
+
   /** Persist current layout to the backend layout endpoint. */
   async save() {
     const payload = this.serialize();
