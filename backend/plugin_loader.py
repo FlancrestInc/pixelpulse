@@ -6,6 +6,7 @@ import importlib.util
 import inspect
 import logging
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Type
@@ -15,21 +16,34 @@ from backend.adapters.base import AdapterBase
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class PluginLoadReport:
+    """Collection of loaded adapters and adapters skipped for missing dependencies."""
+
+    registry: dict[str, Type[AdapterBase]] = field(default_factory=dict)
+    missing_dependencies: dict[str, list[str]] = field(default_factory=dict)
+
+
 def load_adapter_classes() -> dict[str, Type[AdapterBase]]:
     """Discover adapter classes and return them keyed by adapter_type."""
+    return load_adapter_classes_with_report().registry
+
+
+def load_adapter_classes_with_report() -> PluginLoadReport:
+    """Discover adapter classes and include load diagnostics for status reporting."""
     root = Path(__file__).resolve().parent.parent
     builtin_dir = root / "backend" / "adapters" / "builtin"
     plugin_dir = root / "plugins"
 
-    registry: dict[str, Type[AdapterBase]] = {}
-    _load_from_directory(builtin_dir, registry, source_label="builtin")
-    _load_from_directory(plugin_dir, registry, source_label="plugin")
-    return registry
+    report = PluginLoadReport()
+    _load_from_directory(builtin_dir, report, source_label="builtin")
+    _load_from_directory(plugin_dir, report, source_label="plugin")
+    return report
 
 
 def _load_from_directory(
     directory: Path,
-    registry: dict[str, Type[AdapterBase]],
+    report: PluginLoadReport,
     source_label: str,
 ) -> None:
     """Load AdapterBase subclasses from all Python files in a directory."""
@@ -37,7 +51,7 @@ def _load_from_directory(
         logger.info("Adapter directory does not exist, skipping: %s", directory)
         return
 
-    for file_path in sorted(directory.glob("*.py")):
+    for file_path in sorted(directory.rglob("*.py")):
         if file_path.name.startswith("__"):
             continue
 
@@ -50,22 +64,32 @@ def _load_from_directory(
                 continue
             if cls.__module__ != module.__name__:
                 continue
-            if not _requirements_available(cls):
-                continue
 
             adapter_type = getattr(cls, "adapter_type", "").strip()
             if not adapter_type:
                 logger.warning("Skipping adapter class without adapter_type: %s", cls.__name__)
                 continue
 
-            if adapter_type in registry:
+            missing = _missing_requirements(cls)
+            if missing:
+                report.missing_dependencies[adapter_type] = missing
+                install_hint = " ".join(missing)
+                logger.warning(
+                    "Skipping adapter '%s': missing dependencies %s. Install with: pip install %s",
+                    adapter_type,
+                    ", ".join(missing),
+                    install_hint,
+                )
+                continue
+
+            if adapter_type in report.registry:
                 logger.info(
                     "Overriding adapter '%s' with %s implementation from %s",
                     adapter_type,
                     source_label,
                     file_path,
                 )
-            registry[adapter_type] = cls
+            report.registry[adapter_type] = cls
             logger.info("Registered adapter '%s' from %s", adapter_type, file_path)
 
 
@@ -86,24 +110,14 @@ def _import_module(file_path: Path) -> ModuleType | None:
         return None
 
 
-def _requirements_available(adapter_cls: Type[AdapterBase]) -> bool:
-    """Check package requirements declared on adapter and log missing ones."""
+def _missing_requirements(adapter_cls: Type[AdapterBase]) -> list[str]:
+    """Return missing package requirements declared on adapter class."""
     missing: list[str] = []
     for requirement in getattr(adapter_cls, "requirements", []):
         package_name = _normalize_requirement_name(requirement)
         if importlib.util.find_spec(package_name) is None:
             missing.append(requirement)
-
-    if missing:
-        install_hint = " ".join(missing)
-        logger.warning(
-            "Skipping adapter '%s': missing dependencies %s. Install with: pip install %s",
-            adapter_cls.adapter_type,
-            ", ".join(missing),
-            install_hint,
-        )
-        return False
-    return True
+    return missing
 
 
 def _normalize_requirement_name(requirement: str) -> str:

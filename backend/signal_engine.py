@@ -10,7 +10,7 @@ from fastapi import WebSocket
 
 from backend.adapters.base import AdapterBase, Signal
 from backend.config_loader import load_backend_config, load_layout_config
-from backend.plugin_loader import load_adapter_classes
+from backend.plugin_loader import load_adapter_classes_with_report
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,6 @@ class SignalEngine:
     """Loads adapters, polls them on schedule, and broadcasts signals to clients."""
 
     def __init__(self, config_path: str, layout_path: str) -> None:
-        """Initialize the signal engine and in-memory runtime state."""
         self.config_path = config_path
         self.layout_path = layout_path
         self.config: dict[str, Any] = {}
@@ -30,14 +29,15 @@ class SignalEngine:
         self._tasks: list[asyncio.Task[None]] = []
         self._adapters: list[AdapterBase] = []
         self._lock = asyncio.Lock()
+        self.adapter_statuses: dict[str, dict[str, str]] = {}
 
     async def start(self) -> None:
-        """Load configuration and start polling tasks for all configured adapters."""
         self.config = await load_backend_config(self.config_path)
         self.layout = await load_layout_config(self.layout_path)
 
-        adapter_classes = load_adapter_classes()
-        self._adapters = self._build_adapters(adapter_classes)
+        load_report = load_adapter_classes_with_report()
+        self._mark_missing_dependencies(load_report.missing_dependencies)
+        self._adapters = self._build_adapters(load_report.registry)
 
         for adapter in self._adapters:
             task = asyncio.create_task(self._run_adapter_loop(adapter))
@@ -46,7 +46,6 @@ class SignalEngine:
         logger.info("Signal engine started with %d adapters", len(self._adapters))
 
     async def stop(self) -> None:
-        """Stop adapter tasks and close active websocket clients."""
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -60,19 +59,16 @@ class SignalEngine:
         self.clients.clear()
 
     async def register_client(self, websocket: WebSocket) -> None:
-        """Accept websocket client and send the initial handshake payload."""
         await websocket.accept()
         self.clients.add(websocket)
         await websocket.send_json(self._handshake_payload())
         logger.info("WebSocket client connected (%d total)", len(self.clients))
 
     async def unregister_client(self, websocket: WebSocket) -> None:
-        """Remove websocket client from active connection set."""
         self.clients.discard(websocket)
         logger.info("WebSocket client disconnected (%d total)", len(self.clients))
 
     def _build_adapters(self, adapter_classes: dict[str, type[AdapterBase]]) -> list[AdapterBase]:
-        """Instantiate configured adapters from config.yaml."""
         adapters: list[AdapterBase] = []
 
         sky_config = self.config.get("sky_driver")
@@ -80,6 +76,7 @@ class SignalEngine:
             sky_cls = adapter_classes.get("sky_driver")
             if sky_cls is None:
                 logger.warning("sky_driver configured but adapter not found")
+                self.adapter_statuses["sky_driver"] = {"status": "missing_deps", "message": "adapter not found"}
             else:
                 adapters.append(sky_cls(sky_config))
 
@@ -90,36 +87,48 @@ class SignalEngine:
             adapter_cls = adapter_classes.get(adapter_type)
             if adapter_cls is None:
                 logger.warning("Adapter '%s' not found for signal '%s'", adapter_type, entry.get("id"))
+                self.adapter_statuses[self._adapter_key(adapter_type, entry)] = {
+                    "status": "missing_deps",
+                    "message": "adapter unavailable",
+                }
                 continue
             adapters.append(adapter_cls(entry))
 
         return adapters
 
     async def _run_adapter_loop(self, adapter: AdapterBase) -> None:
-        """Poll an adapter on interval with exponential backoff on failures."""
         backoff = 2.0
+        adapter_key = self._adapter_key(adapter.adapter_type, getattr(adapter, "config", {}))
+        await self._set_adapter_status(adapter_key, adapter.adapter_type, "ok")
+
         while True:
             try:
                 result = await adapter.poll()
-                if result:
-                    await self._ingest_signals(result)
-                    backoff = 2.0
-                else:
-                    logger.warning("Adapter '%s' returned no signals", adapter.adapter_type)
+                previous = self.adapter_statuses.get(adapter_key, {}).get("status")
+                if result is None:
+                    await self._set_adapter_status(adapter_key, adapter.adapter_type, "error")
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2.0, 30.0)
                     continue
 
+                if previous == "error":
+                    await self._set_adapter_status(adapter_key, adapter.adapter_type, "recovering")
+                elif previous == "recovering":
+                    await self._set_adapter_status(adapter_key, adapter.adapter_type, "ok")
+
+                if result:
+                    await self._ingest_signals(result)
+                backoff = 2.0
                 await asyncio.sleep(max(adapter.interval, 0.1))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.exception("Adapter loop error for '%s': %s", adapter.adapter_type, exc)
+                await self._set_adapter_status(adapter_key, adapter.adapter_type, "error")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2.0, 30.0)
 
     async def _ingest_signals(self, signals: list[Signal]) -> None:
-        """Update latest signal state and broadcast updates to websocket clients."""
         async with self._lock:
             for signal in signals:
                 self.current_signals[signal.id] = {
@@ -134,8 +143,20 @@ class SignalEngine:
 
         await self._broadcast({"type": "signal_update", "signals": [self.current_signals[s.id] for s in signals]})
 
+    async def _set_adapter_status(self, adapter_key: str, adapter_type: str, status: str, message: str = "") -> None:
+        current = self.adapter_statuses.get(adapter_key, {})
+        if current.get("status") == status and current.get("message", "") == message:
+            return
+        payload = {
+            "adapter_key": adapter_key,
+            "adapter_type": adapter_type,
+            "status": status,
+            "message": message,
+        }
+        self.adapter_statuses[adapter_key] = {"status": status, "message": message, "adapter_type": adapter_type}
+        await self._broadcast({"type": "adapter_status", **payload})
+
     async def _broadcast(self, payload: dict[str, Any]) -> None:
-        """Broadcast a JSON payload to all active websocket clients."""
         stale: list[WebSocket] = []
         for websocket in self.clients:
             try:
@@ -146,10 +167,22 @@ class SignalEngine:
             await self.unregister_client(websocket)
 
     def _handshake_payload(self) -> dict[str, Any]:
-        """Build initial handshake payload for newly connected websocket clients."""
         return {
             "type": "handshake",
             "signals": self.current_signals,
             "config": self.config,
             "layout": self.layout,
+            "adapter_statuses": self.adapter_statuses,
         }
+
+    def _adapter_key(self, adapter_type: str, config: dict[str, Any]) -> str:
+        signal_id = config.get("id") if isinstance(config, dict) else None
+        return f"{adapter_type}:{signal_id}" if signal_id else adapter_type
+
+    def _mark_missing_dependencies(self, missing: dict[str, list[str]]) -> None:
+        for adapter_type, deps in missing.items():
+            self.adapter_statuses[adapter_type] = {
+                "status": "missing_deps",
+                "message": f"missing dependencies: {', '.join(deps)}",
+                "adapter_type": adapter_type,
+            }

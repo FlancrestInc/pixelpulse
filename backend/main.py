@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.adapters.builtin.webhook import WebhookAdapter
+from backend.config_api import router as config_api_router
 from backend.signal_engine import SignalEngine
 
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +26,8 @@ engine = SignalEngine(config_path=str(CONFIG_PATH), layout_path=str(LAYOUT_PATH)
 
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend_static")
+
+app.include_router(config_api_router)
 
 
 @app.get("/")
@@ -58,3 +62,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.receive_text()
     except WebSocketDisconnect:
         await engine.unregister_client(websocket)
+
+
+@app.post("/hooks/{hook_path:path}")
+async def webhook_ingest(hook_path: str, request: Request) -> dict[str, str]:
+    """Ingest webhook payloads and route them to webhook adapters."""
+    payload = await request.json()
+    routed = await WebhookAdapter.dispatch_payload("/" + hook_path, payload if isinstance(payload, dict) else {"value": payload})
+    return {"status": "accepted" if routed else "ignored"}
