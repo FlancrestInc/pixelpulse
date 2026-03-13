@@ -214,10 +214,11 @@ export class SignalLibrary {
         overlay.innerHTML += `<div>Step 4/4: confirm</div><pre style="white-space:pre-wrap">${JSON.stringify({ adapter: state.adapter, ...state.config, ...state.signal }, null, 2)}</pre><button id="create">Create</button> <button id="cancel">Close</button>`;
         overlay.querySelector('#create').onclick = async () => {
           const payload = { id: state.signal.id, label: state.signal.label, adapter: state.adapter, ...state.config };
-          let response = await fetch('/api/signals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ signal: payload }) });
-          if (!response.ok) {
-            response = await fetch('/api/config/adapters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adapter_config: payload }) });
-          }
+          const response = await fetch('/api/config/adapters', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ adapter_config: payload }),
+          });
           if (response.ok) {
             this.signals.set(payload.id, {
               id: payload.id,
