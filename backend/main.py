@@ -23,8 +23,6 @@ CONFIG_PATH = BASE_DIR / "backend" / "config.yaml"
 LAYOUT_PATH = BASE_DIR / "backend" / "layout.yaml"
 
 engine = SignalEngine(config_path=str(CONFIG_PATH), layout_path=str(LAYOUT_PATH))
-# Route config-api layout save notifications through the running engine.
-set_layout_event_publisher(engine._broadcast)
 
 
 @asynccontextmanager
@@ -32,6 +30,7 @@ async def lifespan(app: FastAPI):
     """Manage SignalEngine startup and shutdown for app lifespan."""
     logger.info("Starting PixelPulse backend")
     await engine.start()
+    set_layout_event_publisher(engine._broadcast)
     yield
     logger.info("Stopping PixelPulse backend")
     await engine.stop()
@@ -53,6 +52,7 @@ async def index() -> FileResponse:
         return FileResponse(index_path)
     return FileResponse(BASE_DIR / "pixelpulse_standalone.html")
 
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Handle WebSocket connections for initial handshake and live signal updates."""
@@ -68,5 +68,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 async def webhook_ingest(hook_path: str, request: Request) -> dict[str, str]:
     """Ingest webhook payloads and route them to webhook adapters."""
     payload = await request.json()
-    routed = await WebhookAdapter.dispatch_payload("/" + hook_path, payload if isinstance(payload, dict) else {"value": payload})
+    routed = await WebhookAdapter.dispatch_payload(
+        "/" + hook_path,
+        payload if isinstance(payload, dict) else {"value": payload},
+    )
     return {"status": "accepted" if routed else "ignored"}
