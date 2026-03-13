@@ -1,15 +1,44 @@
 /**
- * Maintains in-memory edit layout state and persists it through the REST layout API.
+ * Round-trip verification scenario (manual QA reference):
+ * 1) Enter edit mode, wire `cpu_load` to `main_3`, place `windmill`, set valve label.
+ * 2) Exit edit mode -> PUT /api/layout writes layout.yaml with display.plots_per_row,
+ *    building/style, signal, and valve fields for every plot.
+ * 3) Hand-edit backend/layout.yaml: move the building to another plot, change style,
+ *    change plots_per_row, or remove a signal id.
+ * 4) Reload page -> frontend consumes handshake layout payload and reconstructs plot
+ *    states + pipes from that payload exactly.
+ *
+ * Known edge cases:
+ * - Unknown building keys are preserved in serialized layout but ignored by city rendering.
+ * - Missing/unknown signal IDs still serialize and zone plots, but show no live value.
+ * - plots_per_row changes are preserved in display metadata; current v1 plot geometry is
+ *   fixed, so remapping beyond known plot IDs is not applied automatically.
+ */
+
+/**
+ * Maintains mutable edit-mode layout state and persists it to the backend.
  */
 export class LayoutSerializer {
-  constructor(initialLayout = { plots: [] }) {
+  /**
+   * @param {object} deps
+   * @param {object} [deps.initialLayout]
+   * @param {import('../scene/city/plot_manager.js').PlotManager} [deps.plotManager]
+   * @param {import('./pipe_renderer.js').PipeRenderer} [deps.pipeRenderer]
+   */
+  constructor({ initialLayout = { plots: [] }, plotManager = null, pipeRenderer = null } = {}) {
+    this.plotManager = plotManager;
+    this.pipeRenderer = pipeRenderer;
     this.plotMap = new Map();
+    this.display = { plots_per_row: 6 };
     this.load(initialLayout);
   }
 
   /** Load a full layout payload into mutable in-memory plot records. */
   load(layout = { plots: [] }) {
     this.plotMap.clear();
+    const plotsPerRow = Number(layout?.display?.plots_per_row);
+    this.display.plots_per_row = Number.isFinite(plotsPerRow) && plotsPerRow > 0 ? plotsPerRow : 6;
+
     (layout?.plots ?? []).forEach((entry) => {
       if (!entry?.plot_id) return;
       this.plotMap.set(entry.plot_id, {
@@ -20,6 +49,9 @@ export class LayoutSerializer {
         valve: entry.valve ? { ...entry.valve } : null,
       });
     });
+
+    this.plotManager?.setLayout(this.serializeAll().plots);
+    this.pipeRenderer?.syncFromLayout(this.serializeAll().plots);
   }
 
   /** Return a mutable plot record, creating an empty one when missing. */
@@ -35,6 +67,8 @@ export class LayoutSerializer {
     const plot = this.ensurePlot(plotId);
     plot.signal = signalId;
     plot.valve = valve ? { ...valve } : plot.valve;
+    this.pipeRenderer?.addPipe(signalId, plotId);
+    if (plot.valve) this.pipeRenderer?.updateValve(plotId, plot.valve);
   }
 
   /** Remove a signal connection while preserving the placed building + style. */
@@ -42,6 +76,7 @@ export class LayoutSerializer {
     const plot = this.ensurePlot(plotId);
     plot.signal = null;
     plot.valve = null;
+    this.pipeRenderer?.removePipe(plotId);
   }
 
   /** Place or update a building on a plot. */
@@ -62,6 +97,7 @@ export class LayoutSerializer {
   setValve(plotId, valve) {
     const plot = this.ensurePlot(plotId);
     plot.valve = { ...valve };
+    this.pipeRenderer?.updateValve(plotId, plot.valve);
   }
 
   /** Delete every plot wired to a specific signal id. */
@@ -72,6 +108,7 @@ export class LayoutSerializer {
         plot.building = null;
         plot.style = null;
         plot.valve = null;
+        this.pipeRenderer?.removePipe(plot.plot_id);
       }
     });
   }
@@ -88,38 +125,57 @@ export class LayoutSerializer {
     from.style = null;
     from.signal = null;
     from.valve = null;
+
+    this.pipeRenderer?.removePipe(fromPlotId);
+    if (to.signal) {
+      this.pipeRenderer?.addPipe(to.signal, toPlotId);
+      if (to.valve) this.pipeRenderer?.updateValve(toPlotId, to.valve);
+    }
   }
 
   /**
-   * Create a backend-compatible layout payload.
-   *
-   * Note: this intentionally omits empty plot entries (no signal and no building).
-   * The API only needs non-empty plots, and callers should not assume serialize()
-   * returns every plot present in plotMap.
+   * Create a backend-compatible layout payload matching layout.yaml schema.
    */
   serialize() {
-    const plots = [...this.plotMap.values()]
-      .filter((plot) => plot.signal || plot.building)
-      .map((plot) => ({
-        plot_id: plot.plot_id,
-        signal: plot.signal ?? undefined,
-        building: plot.building ?? undefined,
-        style: plot.style ?? undefined,
-        valve: plot.valve ?? undefined,
-      }));
-    return { plots };
+    const plots = this._orderedPlotEntries().map((plot) => {
+      const entry = { plot_id: plot.plot_id };
+      if (plot.building) {
+        entry.building = plot.building;
+        if (plot.style) entry.style = plot.style;
+      }
+      if (plot.signal) {
+        entry.signal = plot.signal;
+        if (plot.valve) {
+          entry.valve = {
+            range_min: plot.valve.range_min,
+            range_max: plot.valve.range_max,
+            alert_threshold: plot.valve.alert_threshold,
+            label: plot.valve.label,
+          };
+        }
+      }
+      return entry;
+    });
+
+    return {
+      display: { plots_per_row: this.display.plots_per_row },
+      plots,
+    };
   }
 
-  /** Create a full layout payload including empty plots for scene state updates. */
+  /** Create a full layout payload including empty plots for scene updates. */
   serializeAll() {
-    const plots = [...this.plotMap.values()].map((plot) => ({
+    const plots = this._orderedPlotEntries().map((plot) => ({
       plot_id: plot.plot_id,
       signal: plot.signal ?? undefined,
       building: plot.building ?? undefined,
       style: plot.style ?? undefined,
       valve: plot.valve ?? undefined,
     }));
-    return { plots };
+    return {
+      display: { plots_per_row: this.display.plots_per_row },
+      plots,
+    };
   }
 
   /** Persist current layout to the backend layout endpoint. */
@@ -132,5 +188,15 @@ export class LayoutSerializer {
     });
     if (!response.ok) throw new Error(`Layout save failed (${response.status})`);
     return payload;
+  }
+
+  _orderedPlotEntries() {
+    if (this.plotManager) {
+      return this.plotManager.entries().map((plot) => {
+        const existing = this.ensurePlot(plot.id);
+        return { ...existing, plot_id: plot.id };
+      });
+    }
+    return [...this.plotMap.values()].sort((a, b) => a.plot_id.localeCompare(b.plot_id));
   }
 }

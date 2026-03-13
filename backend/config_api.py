@@ -17,6 +17,8 @@ from backend.plugin_loader import load_adapter_classes_with_report
 
 router = APIRouter(prefix="/api", tags=["config"])
 
+_layout_event_publisher = None
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = BASE_DIR / "backend" / "config.yaml"
 LAYOUT_PATH = BASE_DIR / "backend" / "layout.yaml"
@@ -38,6 +40,12 @@ class PrometheusTestRequest(BaseModel):
     url: str
     query: str
     auth: dict[str, Any] | None = None
+
+
+def set_layout_event_publisher(publisher) -> None:
+    """Register async callback for layout save status websocket events."""
+    global _layout_event_publisher
+    _layout_event_publisher = publisher
 
 
 @router.get("/signals")
@@ -126,7 +134,14 @@ async def get_layout() -> dict[str, Any]:
 
 @router.put("/layout")
 async def put_layout(request: LayoutWriteRequest) -> dict[str, str]:
-    await _atomic_write_yaml(LAYOUT_PATH, request.layout)
+    try:
+        await _atomic_write_yaml(LAYOUT_PATH, request.layout)
+        if _layout_event_publisher is not None:
+            await _layout_event_publisher({"type": "layout_saved", "layout": request.layout})
+    except Exception as exc:
+        if _layout_event_publisher is not None:
+            await _layout_event_publisher({"type": "layout_save_failed", "error": str(exc)})
+        raise
     return {"status": "ok"}
 
 

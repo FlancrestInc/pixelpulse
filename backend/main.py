@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.adapters.builtin.webhook import WebhookAdapter
-from backend.config_api import router as config_api_router
+from backend.config_api import router as config_api_router, set_layout_event_publisher
 from backend.signal_engine import SignalEngine
 
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PixelPulse", lifespan=lifespan)
+set_layout_event_publisher(engine._broadcast)
 
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend_static")

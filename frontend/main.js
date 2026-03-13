@@ -1,6 +1,7 @@
 import { EditController } from './edit_mode/edit_controller.js';
 import { BuildingPicker } from './edit_mode/building_picker.js';
 import { LayoutSerializer } from './edit_mode/layout_serializer.js';
+import { PipeRenderer } from './edit_mode/pipe_renderer.js';
 import { SignalLibrary } from './edit_mode/signal_library.js';
 import { ValvePanel } from './edit_mode/valve_panel.js';
 import { SignalBus } from './signal_bus.js';
@@ -63,11 +64,12 @@ app.stage.addChild(world);
 const cityScene = new CityScene(app, world, signalBus, tooltip);
 await cityScene.init();
 
-const layoutSerializer = new LayoutSerializer(signalBus.getLayout());
+const pipeRenderer = new PipeRenderer({ signalBus, plotManager: cityScene.plotManager, world });
+const layoutSerializer = new LayoutSerializer({ initialLayout: signalBus.getLayout(), plotManager: cityScene.plotManager, pipeRenderer });
 const signalLibrary = new SignalLibrary(signalBus, layoutSerializer);
 const buildingPicker = new BuildingPicker(app, world, cityScene, layoutSerializer, cityScene.plotManager);
 const valvePanel = new ValvePanel(signalBus, layoutSerializer);
-const editController = new EditController({ cityScene, signalLibrary, buildingPicker, valvePanel, layoutSerializer, world });
+const editController = new EditController({ cityScene, signalLibrary, buildingPicker, valvePanel, layoutSerializer, pipeRenderer, world, signalBus });
 
 let resizeTimer = null;
 
@@ -84,7 +86,9 @@ function fitScene() {
 }
 
 document.addEventListener('layout-updated', () => {
-  cityScene.applyLayout(layoutSerializer.serializeAll().plots);
+  const layout = layoutSerializer.serializeAll();
+  cityScene.applyLayout(layout.plots);
+  pipeRenderer.syncFromLayout(layout.plots);
   signalLibrary.render();
 });
 
@@ -94,8 +98,18 @@ document.addEventListener('pipe-menu', (event) => {
   menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:67;background:rgba(18,23,35,.97);border:1px solid rgba(140,165,207,.4);border-radius:8px;padding:6px;`;
   menu.innerHTML = '<button id="cfg">Configure</button><button id="rm">Remove pipe</button>';
   document.body.appendChild(menu);
-  menu.querySelector('#cfg').onclick = () => { document.dispatchEvent(new CustomEvent('pipe-selected', { detail: { plotId, x, y } })); menu.remove(); };
-  menu.querySelector('#rm').onclick = () => { layoutSerializer.removePipe(plotId); cityScene.applyLayout(layoutSerializer.serializeAll().plots); signalLibrary.render(); menu.remove(); };
+  menu.querySelector('#cfg').onclick = () => {
+    document.dispatchEvent(new CustomEvent('pipe-selected', { detail: { plotId, x, y } }));
+    menu.remove();
+  };
+  menu.querySelector('#rm').onclick = () => {
+    layoutSerializer.removePipe(plotId);
+    const layout = layoutSerializer.serializeAll();
+    cityScene.applyLayout(layout.plots);
+    pipeRenderer.syncFromLayout(layout.plots);
+    signalLibrary.render();
+    menu.remove();
+  };
   window.setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
 });
 
@@ -120,6 +134,20 @@ window.addEventListener('resize', () => {
     window.clearTimeout(resizeTimer);
   }
   resizeTimer = window.setTimeout(fitScene, 150);
+});
+
+signalBus.onLayoutChange((layout) => {
+  layoutSerializer.load(layout);
+  cityScene.applyLayout(layoutSerializer.serializeAll().plots);
+  signalLibrary.render();
+});
+
+signalBus.onLayoutSaveStatus((status) => {
+  if (status.ok) {
+    editController.showSavedToast();
+  } else {
+    editController.showSaveFailedToast();
+  }
 });
 
 app.ticker.add((delta) => {
