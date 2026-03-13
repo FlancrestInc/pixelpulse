@@ -59,6 +59,15 @@ export class EditController {
     this.toastTimer = window.setTimeout(() => { this.toast.style.display = 'none'; }, 2200);
   }
 
+  _setComponentEditState() {
+    const isEditMode = this.mode === 'edit';
+    this.cityScene.setAnimationPaused(isEditMode);
+    this.cityScene.plotManager.setEditMode(isEditMode);
+    this.signalLibrary.setEditMode(isEditMode);
+    this.buildingPicker.setEditMode(isEditMode);
+    this.valvePanel.setEditMode(isEditMode);
+  }
+
   _snapToTarget() {
     if (!this.transition) return;
     window.cancelAnimationFrame(this.transition.raf);
@@ -66,6 +75,7 @@ export class EditController {
     this.mode = this.targetMode;
     this.transition = null;
     this._setButtonLabel();
+    this._setComponentEditState();
   }
 
   _applyProgress(progress, direction) {
@@ -111,11 +121,7 @@ export class EditController {
         this.mode = targetMode;
         this.transition = null;
         this._setButtonLabel();
-        this.cityScene.setAnimationPaused(this.mode === 'edit');
-        this.cityScene.plotManager.setEditMode(this.mode === 'edit');
-        this.signalLibrary.setEditMode(this.mode === 'edit');
-        this.buildingPicker.setEditMode(this.mode === 'edit');
-        this.valvePanel.setEditMode(this.mode === 'edit');
+        this._setComponentEditState();
         return;
       }
       this.transition.raf = window.requestAnimationFrame(tick);
