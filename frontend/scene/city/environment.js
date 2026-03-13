@@ -63,6 +63,7 @@ export class CityEnvironment {
     this.skyline = new PIXI.Container();
     this.hills = new PIXI.Container();
     this.timeOfDay = 0;
+    this.followSystemClock = true;
     this.gradientCanvas = document.createElement('canvas');
     this.gradientCanvas.width = 8;
     this.gradientCanvas.height = 256;
@@ -117,7 +118,7 @@ export class CityEnvironment {
   }
 
   update() {
-    this.tickClock();
+    if (this.followSystemClock) this.tickClock();
     const palette = skyPalette(this.timeOfDay);
     if (!this.lastPalette || this.lastPalette.top !== palette.top || this.lastPalette.bottom !== palette.bottom) {
       drawGradient(this.gradientCtx, this.gradientCanvas, this.gradientTexture, palette.top, palette.bottom);

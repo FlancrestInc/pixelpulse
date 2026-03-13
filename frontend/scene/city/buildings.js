@@ -1,3 +1,5 @@
+import { BusStop } from './building_types/bus_stop.js';
+import { WaterTower } from './building_types/water_tower.js';
 import { Windmill } from './building_types/windmill.js';
 
 class PlaceholderBuilding {
@@ -19,13 +21,7 @@ class PlaceholderBuilding {
     body.beginFill(0x4b5b73, 0.9);
     body.drawRoundedRect(-40, -120, 80, 120, 8);
     body.endFill();
-
-    const roof = new PIXI.Graphics();
-    roof.beginFill(0x384355);
-    roof.drawRect(-46, -126, 92, 12);
-    roof.endFill();
-
-    this.container.addChild(body, roof);
+    this.container.addChild(body);
     this.container.x = this.plot.x;
     this.container.y = this.plot.y;
   }
@@ -34,16 +30,13 @@ class PlaceholderBuilding {
 
   onSignal() {}
 
-  setEditMode(active) {
-    this.container.alpha = active ? 0.75 : 1;
-  }
+  setAnimationState() {}
 
   destroy() {
     this.container.destroy({ children: true });
   }
 }
 
-/** Base class for concrete buildings. */
 export class BuildingType extends PlaceholderBuilding {}
 
 const BUILDING_REGISTRY = new Map();
@@ -53,11 +46,11 @@ function register(key, type) {
 }
 
 register('windmill', Windmill);
-register('water_tower', PlaceholderBuilding);
+register('water_tower', WaterTower);
+register('bus_stop', BusStop);
 register('warehouse', PlaceholderBuilding);
 register('power_station', PlaceholderBuilding);
 register('server_tower', PlaceholderBuilding);
-register('bus_stop', PlaceholderBuilding);
 register('bank_ticker', PlaceholderBuilding);
 register('construction_yard', PlaceholderBuilding);
 register('swimming_pool', PlaceholderBuilding);

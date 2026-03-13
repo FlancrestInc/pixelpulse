@@ -11,9 +11,12 @@ export class Windmill {
     this.plot = plot;
     this.style = style;
     this.container = new PIXI.Container();
-    this.base = null;
     this.blades = new PIXI.Container();
-    this.rotationSpeed = 0.03;
+    this.rotationSpeed = 0.02;
+    this.alertOverlay = new PIXI.Graphics();
+    this.disconnectIcon = null;
+    this.state = 'idle';
+    this.signalValue = 0;
   }
 
   init() {
@@ -24,10 +27,10 @@ export class Windmill {
     };
     const p = palettes[this.style] ?? palettes.classic_wood;
 
-    this.base = new PIXI.Graphics();
-    this.base.beginFill(p.tower);
-    this.base.drawPolygon([-40, 0, 40, 0, 26, -140, -26, -140]);
-    this.base.endFill();
+    const base = new PIXI.Graphics();
+    base.beginFill(p.tower);
+    base.drawPolygon([-40, 0, 40, 0, 26, -140, -26, -140]);
+    base.endFill();
 
     const roof = new PIXI.Graphics();
     roof.beginFill(p.roof);
@@ -49,18 +52,40 @@ export class Windmill {
       this.blades.addChild(blade);
     }
 
-    this.container.addChild(this.base, roof, this.blades, hub);
+    this.alertOverlay.beginFill(0xff3c3c, 0.55);
+    this.alertOverlay.drawCircle(0, -84, 80);
+    this.alertOverlay.endFill();
+    this.alertOverlay.visible = false;
+
+    this.disconnectIcon = new PIXI.Text('⚡', { fill: 0xffdf6a, fontSize: 20, fontWeight: 'bold' });
+    this.disconnectIcon.anchor.set(0.5);
+    this.disconnectIcon.position.set(0, -170);
+    this.disconnectIcon.visible = false;
+
+    this.container.addChild(base, roof, this.blades, hub, this.alertOverlay, this.disconnectIcon);
     this.container.x = this.plot.x;
     this.container.y = this.plot.y;
   }
 
   update(delta) {
     this.blades.rotation += this.rotationSpeed * delta;
+    const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);
+    this.alertOverlay.alpha = 0.15 + pulse * 0.55;
+    this.alertOverlay.visible = this.state === 'alert';
+    this.disconnectIcon.visible = this.state === 'disconnected';
   }
 
   onSignal(signal) {
-    const value = Number(signal?.value ?? 0.5);
-    this.rotationSpeed = 0.015 + Math.max(0, Math.min(value, 1)) * 0.08;
+    const value = Number(signal?.value ?? 0);
+    const n = Math.max(0, Math.min(value, 1));
+    this.signalValue = n;
+    this.rotationSpeed = 0.01 + n * 0.1;
+  }
+
+  setAnimationState(state) {
+    this.state = state;
+    if (state === 'idle') this.rotationSpeed = 0.015;
+    if (state === 'disconnected') this.rotationSpeed *= 0.3;
   }
 
   setEditMode(active) {
