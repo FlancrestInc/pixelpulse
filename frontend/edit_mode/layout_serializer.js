@@ -37,12 +37,10 @@ export class LayoutSerializer {
     plot.valve = valve ? { ...valve } : plot.valve;
   }
 
-  /** Remove a signal connection and reset plot to empty state. */
+  /** Remove a signal connection while preserving the placed building + style. */
   removePipe(plotId) {
     const plot = this.ensurePlot(plotId);
     plot.signal = null;
-    plot.building = null;
-    plot.style = null;
     plot.valve = null;
   }
 
@@ -92,7 +90,13 @@ export class LayoutSerializer {
     from.valve = null;
   }
 
-  /** Create a backend-compatible layout payload. */
+  /**
+   * Create a backend-compatible layout payload.
+   *
+   * Note: this intentionally omits empty plot entries (no signal and no building).
+   * The API only needs non-empty plots, and callers should not assume serialize()
+   * returns every plot present in plotMap.
+   */
   serialize() {
     const plots = [...this.plotMap.values()]
       .filter((plot) => plot.signal || plot.building)
