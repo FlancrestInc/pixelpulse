@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -21,8 +22,20 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 CONFIG_PATH = BASE_DIR / "backend" / "config.yaml"
 LAYOUT_PATH = BASE_DIR / "backend" / "layout.yaml"
 
-app = FastAPI(title="PixelPulse")
 engine = SignalEngine(config_path=str(CONFIG_PATH), layout_path=str(LAYOUT_PATH))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage SignalEngine startup and shutdown for app lifespan."""
+    logger.info("Starting PixelPulse backend")
+    await engine.start()
+    yield
+    logger.info("Stopping PixelPulse backend")
+    await engine.stop()
+
+
+app = FastAPI(title="PixelPulse", lifespan=lifespan)
 
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend_static")
@@ -37,21 +50,6 @@ async def index() -> FileResponse:
     if index_path.exists():
         return FileResponse(index_path)
     return FileResponse(BASE_DIR / "pixelpulse_standalone.html")
-
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    """Start the signal engine when the FastAPI app boots."""
-    logger.info("Starting PixelPulse backend")
-    await engine.start()
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    """Stop the signal engine when the FastAPI app shuts down."""
-    logger.info("Stopping PixelPulse backend")
-    await engine.stop()
-
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
