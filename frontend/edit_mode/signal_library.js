@@ -50,11 +50,20 @@ export class SignalLibrary {
   _bindBus() {
     this.signalBus.subscribeAny((signal) => {
       if (!signal?.id) return;
-      const entry = this.signals.get(signal.id) ?? { ...signal, value: signal.value };
-      Object.assign(entry, signal);
-      this.signals.set(signal.id, entry);
+      const existing = this.signals.get(signal.id);
+      this.signals.set(signal.id, { ...(existing ?? signal), ...signal });
+      if (existing) {
+        this._updateSignalValue(signal.id, signal.value);
+        return;
+      }
       this.render();
     });
+  }
+
+  _updateSignalValue(signalId, value) {
+    const valueNode = this.panel.querySelector(`[data-signal-id="${CSS.escape(signalId)}"]`);
+    if (!valueNode) return;
+    valueNode.textContent = String(value ?? '--');
   }
 
   _bindPlotDrop() {
@@ -127,12 +136,12 @@ export class SignalLibrary {
 
     const icon = this._icon(signal.type);
     const source = signal.source ?? 'unknown';
-    node.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px"><div>${icon} <strong>${signal.id}</strong><div style="opacity:.8">${signal.label ?? signal.id}</div></div><div style="text-align:right"><span style="background:#3f4f72;padding:2px 6px;border-radius:999px">${source}</span><div style="margin-top:6px;color:#bde5ff">${String(signal.value ?? '--')}</div></div></div>`;
+    node.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px"><div>${icon} <strong>${signal.id}</strong><div style="opacity:.8">${signal.label ?? signal.id}</div></div><div style="text-align:right"><span style="background:#3f4f72;padding:2px 6px;border-radius:999px">${source}</span><div data-signal-id="${signal.id}" style="margin-top:6px;color:#bde5ff">${String(signal.value ?? '--')}</div></div></div>`;
 
     if (signal.source === 'prometheus') {
       const details = document.createElement('details');
       details.style.marginTop = '8px';
-      details.innerHTML = `<summary style="cursor:pointer">Source details</summary><div style="padding-top:6px;opacity:.9">PromQL: ${signal.metadata?.query ?? '--'}<br>URL: ${signal.metadata?.url ?? '--'}<br>Host: ${signal.metadata?.host ?? '--'}</div>`;
+      details.innerHTML = `<summary style="cursor:pointer">Source details</summary><div style="padding-top:6px;opacity:.9">PromQL: ${signal.metadata?.promql ?? '--'}<br>URL: ${signal.metadata?.prometheus_url ?? '--'}<br>Host: ${signal.metadata?.host_label ?? '--'}</div>`;
       node.appendChild(details);
     }
 
@@ -142,10 +151,7 @@ export class SignalLibrary {
     remove.addEventListener('click', async (event) => {
       event.stopPropagation();
       try {
-        const response = await fetch(`/api/signals/${encodeURIComponent(signal.id)}`, { method: 'DELETE' });
-        if (!response.ok) {
-          await fetch(`/api/config/adapters/${encodeURIComponent(signal.id)}`, { method: 'DELETE' });
-        }
+        await fetch(`/api/config/adapters/${encodeURIComponent(signal.id)}`, { method: 'DELETE' });
         this.layoutSerializer.removeSignal(signal.id);
         this.signals.delete(signal.id);
         document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'remove-source' } }));
@@ -213,7 +219,14 @@ export class SignalLibrary {
             response = await fetch('/api/config/adapters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adapter_config: payload }) });
           }
           if (response.ok) {
-            this.signals.set(payload.id, { id: payload.id, label: payload.label, value: '--', source: state.adapter, type: 'gauge', metadata: { query: state.config.query, url: state.config.url } });
+            this.signals.set(payload.id, {
+              id: payload.id,
+              label: payload.label,
+              value: '--',
+              source: state.adapter,
+              type: 'gauge',
+              metadata: { promql: state.config.query, prometheus_url: state.config.url },
+            });
             this.render();
             overlay.remove();
           }
