@@ -28,3 +28,17 @@ signals:
       - url: "https://example.com/rss.xml"
         name: "Example Feed"
     interval: 300
+
+  - id: "http_requests"
+    adapter: "webhook"
+    path: "/hooks/http-requests"
+    type: "rate"
+    value_key: "value"
+    interval: 1
+
+  - id: "active_streams"
+    adapter: "shell"
+    command: "echo 3"
+    type: "gauge"
+    max_value: 10
+    interval: 10
