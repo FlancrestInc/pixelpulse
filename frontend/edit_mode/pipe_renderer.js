@@ -12,6 +12,10 @@ const PIPE_COLORS = {
 
 /**
  * Renders and manages edit-mode signal pipes between source nodes and city plots.
+ *
+ * Rendering is driven by a requestAnimationFrame loop that runs only while edit
+ * mode is active, giving the pulse-dot animation smooth per-frame motion without
+ * burning CPU in display mode.
  */
 export class PipeRenderer {
   /**
@@ -29,6 +33,7 @@ export class PipeRenderer {
     this.hoveredPipeKey = null;
     this.highlightedSignalIds = new Set();
     this.resizeTimer = null;
+    this._rafId = null;
 
     this.canvas = document.createElement('canvas');
     this.canvas.style.cssText = 'position:fixed;inset:0;z-index:43;pointer-events:none;';
@@ -43,29 +48,34 @@ export class PipeRenderer {
 
     this._bindEvents();
     this._fitCanvas();
-    this._render();
   }
 
   /** Add or replace the signal pipe for a target plot. */
   addPipe(signalId, plotId) {
+    // Remove any existing pipe for this plot.
     this.pipes = this.pipes.filter((pipe) => pipe.toPlotId !== plotId);
+
+    // Insert a placeholder first so _sortedSignalIds includes this signalId
+    // when computing the source node X position during route calculation.
+    // Without this, a brand-new signal would get a different slot position
+    // during routing than after the pipe is committed to the array.
+    this.pipes.push({ signalId, toPlotId: plotId, route: [], fromNode: null, valve: null });
+
     const route = this._routePipe(signalId, plotId);
-    if (!route) return;
-    this.pipes.push({
-      signalId,
-      fromNode: this._sourceNodeForSignal(signalId),
-      toPlotId: plotId,
-      route,
-      valve: null,
-    });
-    this._render();
+    const pipe = this.pipes.find((p) => p.toPlotId === plotId);
+    if (route && pipe) {
+      pipe.route = route;
+      pipe.fromNode = this._sourceNodeForSignal(signalId);
+    } else {
+      // Routing failed — remove the placeholder.
+      this.pipes = this.pipes.filter((p) => p.toPlotId !== plotId);
+    }
   }
 
   /** Remove a pipe by target plot id. */
   removePipe(plotId) {
     this.pipes = this.pipes.filter((pipe) => pipe.toPlotId !== plotId);
     if (this.hoveredPipeKey === plotId) this.hoveredPipeKey = null;
-    this._render();
   }
 
   /** Update persisted valve data attached to a pipe. */
@@ -93,8 +103,12 @@ export class PipeRenderer {
     if (!active) {
       this.hoveredPipeKey = null;
       this.valveButton.style.display = 'none';
+      this._stopRenderLoop();
+      // Clear canvas when leaving edit mode.
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    } else {
+      this._startRenderLoop();
     }
-    this._render();
   }
 
   /** Rebuild routes from current plot wiring in the serializer state. */
@@ -102,18 +116,36 @@ export class PipeRenderer {
     this.pipes = [];
     layoutPlots.forEach((entry) => {
       if (!entry?.plot_id || !entry?.signal) return;
-      const route = this._routePipe(entry.signal, entry.plot_id);
-      if (!route) return;
-      this.pipes.push({
-        signalId: entry.signal,
-        fromNode: this._sourceNodeForSignal(entry.signal),
-        toPlotId: entry.plot_id,
-        route,
-        valve: entry.valve ? { ...entry.valve } : null,
-      });
+      // Use addPipe so the placeholder-first ordering fix applies here too.
+      this.addPipe(entry.signal, entry.plot_id);
+      const pipe = this.pipes.find((p) => p.toPlotId === entry.plot_id);
+      if (pipe && entry.valve) pipe.valve = { ...entry.valve };
     });
-    this._render();
   }
+
+  // ─── Render loop ──────────────────────────────────────────────────────────
+
+  _startRenderLoop() {
+    if (this._rafId != null) return;
+    const tick = () => {
+      if (!this.editMode) {
+        this._rafId = null;
+        return;
+      }
+      this._render();
+      this._rafId = window.requestAnimationFrame(tick);
+    };
+    this._rafId = window.requestAnimationFrame(tick);
+  }
+
+  _stopRenderLoop() {
+    if (this._rafId != null) {
+      window.cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
+  }
+
+  // ─── Event binding ────────────────────────────────────────────────────────
 
   _bindEvents() {
     window.addEventListener('resize', () => {
@@ -129,13 +161,11 @@ export class PipeRenderer {
       const match = this._findPipeAtPoint(event.clientX, event.clientY);
       this.hoveredPipeKey = match?.toPlotId ?? null;
       this._positionValveButton(match);
-      this._render();
     });
 
     this.canvas.addEventListener('mouseleave', () => {
       this.hoveredPipeKey = null;
       this.valveButton.style.display = 'none';
-      this._render();
     });
 
     this.canvas.addEventListener('click', (event) => {
@@ -160,11 +190,10 @@ export class PipeRenderer {
       const signalId = event.detail?.signalId;
       this.highlightedSignalIds.clear();
       if (signalId) this.highlightedSignalIds.add(signalId);
-      this._render();
     });
-
-    this.signalBus.subscribeAny(() => this._render());
   }
+
+  // ─── Canvas helpers ───────────────────────────────────────────────────────
 
   _fitCanvas() {
     this.canvas.width = window.innerWidth;
@@ -179,8 +208,9 @@ export class PipeRenderer {
         return { ...pipe, fromNode: this._sourceNodeForSignal(pipe.signalId), route };
       })
       .filter(Boolean);
-    this._render();
   }
+
+  // ─── Source node geometry ─────────────────────────────────────────────────
 
   _sourceNodeForSignal(signalId) {
     const signalIds = this._sortedSignalIds();
@@ -199,6 +229,8 @@ export class PipeRenderer {
     });
     return [...ids].sort();
   }
+
+  // ─── Routing ──────────────────────────────────────────────────────────────
 
   _routePipe(signalId, plotId) {
     const plot = this.plotManager.getPlot(plotId);
@@ -241,20 +273,15 @@ export class PipeRenderer {
     if (lCandidate) return lCandidate;
 
     const xCandidates = [
-      start.x,
-      end.x,
+      start.x, end.x,
       (start.x + end.x) * 0.5,
-      start.x - 140,
-      start.x + 140,
-      end.x - 140,
-      end.x + 140,
+      start.x - 140, start.x + 140,
+      end.x - 140, end.x + 140,
     ];
     const yCandidates = [
-      start.y,
-      end.y,
+      start.y, end.y,
       (start.y + end.y) * 0.5,
-      start.y - 120,
-      end.y + 120,
+      start.y - 120, end.y + 120,
     ];
 
     const zRoutes = [];
@@ -341,6 +368,8 @@ export class PipeRenderer {
     return false;
   }
 
+  // ─── Hit testing ──────────────────────────────────────────────────────────
+
   _findPipeAtPoint(x, y) {
     const tolerance = 8;
     return this.pipes.find((pipe) => {
@@ -389,6 +418,8 @@ export class PipeRenderer {
     return route[route.length - 1] ?? { x: 0, y: 0 };
   }
 
+  // ─── Drawing ──────────────────────────────────────────────────────────────
+
   _render() {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (!this.editMode) return;
@@ -398,7 +429,12 @@ export class PipeRenderer {
       const color = PIPE_COLORS[signal?.type] ?? PIPE_COLORS.gauge;
       const highlighted = this.hoveredPipeKey === pipe.toPlotId || this.highlightedSignalIds.has(pipe.signalId);
       this._drawPipe(pipe.route, highlighted ? '#ffffff' : color);
-      if (signal?.value != null) this._drawPulse(pipe.route);
+
+      // Only draw pulse dot when the signal is live (not stale/disconnected).
+      const interval = this.signalBus.getPollInterval(pipe.signalId);
+      const age = signal ? (Date.now() / 1000 - Number(signal.timestamp ?? 0)) : Infinity;
+      const isLive = signal != null && age < interval * 2;
+      if (isLive) this._drawPulse(pipe.route);
     });
   }
 
@@ -413,6 +449,7 @@ export class PipeRenderer {
         this.ctx.fillRect(Math.min(a.x, b.x), a.y - PIPE_WIDTH * 0.5, Math.abs(b.x - a.x), PIPE_WIDTH);
       }
     }
+    // Fill bend corners with a square cap so there's no gap at the joint.
     for (let i = 1; i < route.length - 1; i += 1) {
       this.ctx.fillRect(route[i].x - PIPE_WIDTH * 0.5, route[i].y - PIPE_WIDTH * 0.5, PIPE_WIDTH, PIPE_WIDTH);
     }
