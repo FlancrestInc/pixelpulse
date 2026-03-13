@@ -17,6 +17,7 @@ class SkyDriverAdapter(AdapterBase):
     """Adapter that emits the sky_time gauge for day/night transitions."""
 
     adapter_type = "sky_driver"
+    requirements: list[str] = []
 
     def __init__(self, config: dict[str, Any]) -> None:
         """Initialize the sky driver mode and behavior settings."""

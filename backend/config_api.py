@@ -1,1 +1,163 @@
 """REST API endpoints for reading and writing PixelPulse configuration."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import httpx
+import yaml
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from backend.plugin_loader import load_adapter_classes_with_report
+
+router = APIRouter(prefix="/api", tags=["config"])
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+CONFIG_PATH = BASE_DIR / "backend" / "config.yaml"
+LAYOUT_PATH = BASE_DIR / "backend" / "layout.yaml"
+
+
+class ConfigWriteRequest(BaseModel):
+    config: dict[str, Any]
+
+
+class LayoutWriteRequest(BaseModel):
+    layout: dict[str, Any]
+
+
+class AdapterAddRequest(BaseModel):
+    adapter_config: dict[str, Any] = Field(default_factory=dict)
+
+
+class PrometheusTestRequest(BaseModel):
+    url: str
+    query: str
+    auth: dict[str, Any] | None = None
+
+
+@router.get("/signals")
+async def get_signals() -> dict[str, Any]:
+    config = await _read_yaml(CONFIG_PATH)
+    signals = config.get("signals", []) if isinstance(config, dict) else []
+    return {"signals": signals}
+
+
+@router.get("/adapters")
+async def get_adapters() -> dict[str, Any]:
+    report = load_adapter_classes_with_report()
+    return {
+        "adapters": sorted(report.registry.keys()),
+        "missing_dependencies": report.missing_dependencies,
+    }
+
+
+@router.get("/config")
+async def get_config() -> dict[str, Any]:
+    config = await _read_yaml(CONFIG_PATH)
+    return {"config": config}
+
+
+@router.put("/config")
+async def put_config(request: ConfigWriteRequest) -> dict[str, str]:
+    await _atomic_write_yaml(CONFIG_PATH, request.config)
+    return {"status": "ok"}
+
+
+@router.post("/config/adapters")
+async def add_adapter(request: AdapterAddRequest) -> dict[str, Any]:
+    config = await _read_yaml(CONFIG_PATH)
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="config.yaml must contain a mapping")
+    signals = config.setdefault("signals", [])
+    if not isinstance(signals, list):
+        raise HTTPException(status_code=400, detail="config.yaml signals must be a list")
+    signals.append(request.adapter_config)
+    await _atomic_write_yaml(CONFIG_PATH, config)
+    return {"status": "ok", "signals": signals}
+
+
+@router.delete("/config/adapters/{signal_id}")
+async def delete_adapter(signal_id: str) -> dict[str, Any]:
+    config = await _read_yaml(CONFIG_PATH)
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="config.yaml must contain a mapping")
+    signals = config.get("signals", [])
+    if not isinstance(signals, list):
+        raise HTTPException(status_code=400, detail="config.yaml signals must be a list")
+    config["signals"] = [entry for entry in signals if not (isinstance(entry, dict) and entry.get("id") == signal_id)]
+    await _atomic_write_yaml(CONFIG_PATH, config)
+    return {"status": "ok", "signals": config["signals"]}
+
+
+@router.get("/layout")
+async def get_layout() -> dict[str, Any]:
+    layout = await _read_yaml(LAYOUT_PATH)
+    if layout is None:
+        layout = {"plots": []}
+    return {"layout": layout}
+
+
+@router.put("/layout")
+async def put_layout(request: LayoutWriteRequest) -> dict[str, str]:
+    await _atomic_write_yaml(LAYOUT_PATH, request.layout)
+    return {"status": "ok"}
+
+
+@router.post("/prometheus/test")
+async def test_prometheus_query(request: PrometheusTestRequest) -> dict[str, Any]:
+    headers: dict[str, str] = {}
+    auth = None
+    auth_config = request.auth or {}
+    auth_type = str(auth_config.get("type", "")).lower()
+    if auth_type == "bearer" and auth_config.get("token"):
+        headers["Authorization"] = f"Bearer {auth_config['token']}"
+    if auth_type == "basic" and auth_config.get("username") is not None and auth_config.get("password") is not None:
+        auth = httpx.BasicAuth(str(auth_config["username"]), str(auth_config["password"]))
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=headers, auth=auth) as client:
+            response = await client.get(request.url.rstrip("/") + "/api/v1/query", params={"query": request.query})
+            response.raise_for_status()
+        payload = response.json()
+        return {
+            "status": payload.get("status", "error"),
+            "data": payload.get("data", {}),
+            "error": payload.get("error"),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Prometheus test query failed: {exc}") from exc
+
+
+async def _read_yaml(path: Path) -> Any:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _read_yaml_sync, path)
+
+
+def _read_yaml_sync(path: Path) -> Any:
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+async def _atomic_write_yaml(path: Path, payload: Any) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _atomic_write_yaml_sync, path, payload)
+
+
+def _atomic_write_yaml_sync(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = yaml.safe_dump(payload, sort_keys=False)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(serialized)
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
