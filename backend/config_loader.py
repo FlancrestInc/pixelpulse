@@ -72,12 +72,24 @@ async def load_layout_config(layout_path: str) -> dict[str, Any]:
     for index, plot in enumerate(plots):
         if not isinstance(plot, dict):
             raise ConfigValidationError(f"layout.yaml plots[{index}] must be a mapping.")
-        required_fields = ["plot_id", "building", "style"]
-        for field in required_fields:
-            if not isinstance(plot.get(field), str) or not plot[field]:
-                raise ConfigValidationError(
-                    f"layout.yaml plots[{index}].{field} must be a non-empty string."
-                )
+
+        plot_id = plot.get("plot_id")
+        if not isinstance(plot_id, str) or not plot_id:
+            raise ConfigValidationError(f"layout.yaml plots[{index}].plot_id must be a non-empty string.")
+
+        building = plot.get("building")
+        style = plot.get("style")
+        has_building = building is not None
+        has_style = style is not None
+
+        if has_building and (not isinstance(building, str) or not building):
+            raise ConfigValidationError(f"layout.yaml plots[{index}].building must be a non-empty string.")
+        if has_style and (not isinstance(style, str) or not style):
+            raise ConfigValidationError(f"layout.yaml plots[{index}].style must be a non-empty string.")
+
+        if has_building != has_style:
+            missing_field = "style" if has_building else "building"
+            raise ConfigValidationError(f"layout.yaml plots[{index}]: {missing_field} is required when the other is set.")
 
         signal = plot.get("signal")
         if signal is not None and (not isinstance(signal, str) or not signal):
