@@ -70,7 +70,7 @@ export class SignalLibrary {
         return;
       }
       const defaultValve = { range_min: 0, range_max: 1, alert_threshold: 0.85, label: this.dragSignal.label || this.dragSignal.id };
-      this.layoutSerializer.setPipe(plot.id, this.dragSignal.id, defaultValve);
+      this.layoutSerializer.setPipe(plot.id, this.dragSignal.id, this.dragSignal.type ?? 'gauge', defaultValve);
       const current = this.layoutSerializer.ensurePlot(plot.id);
       if (current.building) this.layoutSerializer.setValve(plot.id, defaultValve);
       document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'signal-drop' } }));

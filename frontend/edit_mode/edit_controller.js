@@ -63,9 +63,18 @@ export class EditController {
     if (!this.transition) return;
     window.cancelAnimationFrame(this.transition.raf);
     this._applyProgress(1, this.targetMode);
-    this.mode = this.targetMode;
+    this._finalizeTransition(this.targetMode);
+  }
+
+  _finalizeTransition(mode) {
+    this.mode = mode;
     this.transition = null;
     this._setButtonLabel();
+    this.cityScene.setAnimationPaused(this.mode === 'edit');
+    this.cityScene.plotManager.setEditMode(this.mode === 'edit');
+    this.signalLibrary.setEditMode(this.mode === 'edit');
+    this.buildingPicker.setEditMode(this.mode === 'edit');
+    this.valvePanel.setEditMode(this.mode === 'edit');
   }
 
   _applyProgress(progress, direction) {
@@ -108,14 +117,7 @@ export class EditController {
       const progress = Math.max(0, Math.min((now - t0) / duration, 1));
       this._applyProgress(progress, targetMode);
       if (progress >= 1) {
-        this.mode = targetMode;
-        this.transition = null;
-        this._setButtonLabel();
-        this.cityScene.setAnimationPaused(this.mode === 'edit');
-        this.cityScene.plotManager.setEditMode(this.mode === 'edit');
-        this.signalLibrary.setEditMode(this.mode === 'edit');
-        this.buildingPicker.setEditMode(this.mode === 'edit');
-        this.valvePanel.setEditMode(this.mode === 'edit');
+        this._finalizeTransition(targetMode);
         return;
       }
       this.transition.raf = window.requestAnimationFrame(tick);

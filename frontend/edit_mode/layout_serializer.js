@@ -15,6 +15,8 @@ export class LayoutSerializer {
       this.plotMap.set(entry.plot_id, {
         plot_id: entry.plot_id,
         signal: entry.signal ?? null,
+        signal_type: entry.signal_type ?? entry.port_type ?? null,
+        port_type: entry.port_type ?? entry.signal_type ?? null,
         building: entry.building ?? null,
         style: entry.style ?? null,
         valve: entry.valve ? { ...entry.valve } : null,
@@ -25,15 +27,27 @@ export class LayoutSerializer {
   /** Return a mutable plot record, creating an empty one when missing. */
   ensurePlot(plotId) {
     if (!this.plotMap.has(plotId)) {
-      this.plotMap.set(plotId, { plot_id: plotId, signal: null, building: null, style: null, valve: null });
+      this.plotMap.set(plotId, {
+        plot_id: plotId,
+        signal: null,
+        signal_type: null,
+        port_type: null,
+        building: null,
+        style: null,
+        valve: null,
+      });
     }
     return this.plotMap.get(plotId);
   }
 
   /** Assign signal wiring and optional valve payload for a plot. */
-  setPipe(plotId, signalId, valve = null) {
+  setPipe(plotId, signalId, signalType = null, valve = null) {
     const plot = this.ensurePlot(plotId);
     plot.signal = signalId;
+    if (signalType != null) {
+      plot.signal_type = signalType;
+      plot.port_type = signalType;
+    }
     plot.valve = valve ? { ...valve } : plot.valve;
   }
 
@@ -41,6 +55,8 @@ export class LayoutSerializer {
   removePipe(plotId) {
     const plot = this.ensurePlot(plotId);
     plot.signal = null;
+    plot.signal_type = null;
+    plot.port_type = null;
     plot.building = null;
     plot.style = null;
     plot.valve = null;
@@ -71,6 +87,8 @@ export class LayoutSerializer {
     this.plotMap.forEach((plot) => {
       if (plot.signal === signalId) {
         plot.signal = null;
+        plot.signal_type = null;
+        plot.port_type = null;
         plot.building = null;
         plot.style = null;
         plot.valve = null;
@@ -85,10 +103,14 @@ export class LayoutSerializer {
     to.building = from.building;
     to.style = from.style;
     to.signal = from.signal;
+    to.signal_type = from.signal_type ?? null;
+    to.port_type = from.port_type ?? from.signal_type ?? null;
     to.valve = from.valve ? { ...from.valve } : null;
     from.building = null;
     from.style = null;
     from.signal = null;
+    from.signal_type = null;
+    from.port_type = null;
     from.valve = null;
   }
 
@@ -99,6 +121,8 @@ export class LayoutSerializer {
       .map((plot) => ({
         plot_id: plot.plot_id,
         signal: plot.signal ?? undefined,
+        signal_type: plot.signal_type ?? undefined,
+        port_type: plot.port_type ?? plot.signal_type ?? undefined,
         building: plot.building ?? undefined,
         style: plot.style ?? undefined,
         valve: plot.valve ?? undefined,
