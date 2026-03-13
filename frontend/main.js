@@ -1,3 +1,8 @@
+import { EditController } from './edit_mode/edit_controller.js';
+import { BuildingPicker } from './edit_mode/building_picker.js';
+import { LayoutSerializer } from './edit_mode/layout_serializer.js';
+import { SignalLibrary } from './edit_mode/signal_library.js';
+import { ValvePanel } from './edit_mode/valve_panel.js';
 import { SignalBus } from './signal_bus.js';
 import { CityScene, REF_HEIGHT, REF_WIDTH } from './scene/city/city_scene.js';
 
@@ -52,10 +57,17 @@ signalBus.start();
 
 const world = new PIXI.Container();
 world.eventMode = 'none';
+world.baseY = 0;
 app.stage.addChild(world);
 
 const cityScene = new CityScene(app, world, signalBus, tooltip);
 await cityScene.init();
+
+const layoutSerializer = new LayoutSerializer(signalBus.getLayout());
+const signalLibrary = new SignalLibrary(signalBus, layoutSerializer);
+const buildingPicker = new BuildingPicker(app, world, cityScene, layoutSerializer, cityScene.plotManager);
+const valvePanel = new ValvePanel(signalBus, layoutSerializer);
+const editController = new EditController({ cityScene, signalLibrary, buildingPicker, valvePanel, layoutSerializer, world });
 
 let resizeTimer = null;
 
@@ -66,7 +78,39 @@ function fitScene() {
   world.scale.set(scale);
   world.x = Math.floor((w - REF_WIDTH * scale) * 0.5);
   world.y = Math.floor((h - REF_HEIGHT * scale) * 0.5);
+  world.baseY = world.y;
 }
+
+document.addEventListener('layout-updated', () => {
+  cityScene.applyLayout(layoutSerializer.serialize().plots);
+  signalLibrary.render();
+});
+
+document.addEventListener('pipe-menu', (event) => {
+  const { plotId, x, y } = event.detail;
+  const menu = document.createElement('div');
+  menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:67;background:rgba(18,23,35,.97);border:1px solid rgba(140,165,207,.4);border-radius:8px;padding:6px;`;
+  menu.innerHTML = '<button id="cfg">Configure</button><button id="rm">Remove pipe</button>';
+  document.body.appendChild(menu);
+  menu.querySelector('#cfg').onclick = () => { document.dispatchEvent(new CustomEvent('pipe-selected', { detail: { plotId, x, y } })); menu.remove(); };
+  menu.querySelector('#rm').onclick = () => { layoutSerializer.removePipe(plotId); cityScene.applyLayout(layoutSerializer.serialize().plots); signalLibrary.render(); menu.remove(); };
+  window.setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+});
+
+document.addEventListener('plot-selected', (event) => {
+  if (!editController.isEditMode) return;
+  const plot = layoutSerializer.ensurePlot(event.detail.plotId);
+  if (plot.signal && !plot.building) {
+    const scale = world.scale.x || 1;
+    document.dispatchEvent(new CustomEvent('pipe-menu', {
+      detail: {
+        plotId: event.detail.plotId,
+        x: world.x + event.detail.plot.x * scale,
+        y: world.y + event.detail.plot.y * scale,
+      },
+    }));
+  }
+});
 
 fitScene();
 window.addEventListener('resize', () => {

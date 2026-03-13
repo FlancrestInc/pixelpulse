@@ -36,6 +36,7 @@ export class CityScene {
     this.actors = [];
     this.actorMeta = [];
     this.layoutApplied = false;
+    this.animationsPaused = false;
   }
 
   async init() {
@@ -74,6 +75,16 @@ export class CityScene {
     }
   }
 
+  /** Dim/brighten the sky while switching mode. */
+  setSkyBrightness(multiplier) {
+    this.environment.container.alpha = Math.max(0, Math.min(multiplier, 1));
+  }
+
+  /** Freeze/resume signal-driven city animations in edit mode. */
+  setAnimationPaused(paused) {
+    this.animationsPaused = paused;
+  }
+
   applyLayout(layoutPlots) {
     this.actors.forEach((actor) => actor.destroy());
     this.actors = [];
@@ -90,6 +101,10 @@ export class CityScene {
       actor.container.eventMode = 'static';
       actor.container.cursor = 'pointer';
       this._attachTooltip(actor, entry);
+      actor.container.on('pointertap', (e) => {
+        const pt = e.data.global;
+        document.dispatchEvent(new CustomEvent('building-selected', { detail: { plotId: entry.plot_id, buildingId: entry.building, x: pt.x, y: pt.y } }));
+      });
       this.root.addChild(actor.container);
       this.actors.push(actor);
 
@@ -107,7 +122,7 @@ export class CityScene {
         this.signalBus.subscribe(entry.signal, (signal) => {
           meta.lastSignal = signal;
           meta.lastSignalReceivedAt = Date.now() / 1000;
-          actor.onSignal(signal);
+          if (!this.animationsPaused) actor.onSignal(signal);
         });
       }
     });
@@ -131,6 +146,7 @@ export class CityScene {
 
   update(delta) {
     this.environment.update(delta);
+    if (this.animationsPaused) return;
 
     const nowSec = Date.now() / 1000;
     this.actorMeta.forEach((meta) => {
