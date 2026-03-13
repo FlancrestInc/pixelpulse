@@ -114,11 +114,11 @@ class WeatherAdapter(AdapterBase):
     async def _geolocate_ip(self) -> tuple[float, float, str]:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.get("https://ipapi.co/json/")
+                res = await client.get("http://ip-api.com/json/")
                 res.raise_for_status()
             data = res.json()
-            lat = float(data.get("latitude"))
-            lon = float(data.get("longitude"))
+            lat = float(data["lat"])
+            lon = float(data["lon"])
             city = str(data.get("city", "Current location"))
             return lat, lon, city
         except Exception:
