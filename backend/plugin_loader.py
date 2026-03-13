@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -95,7 +96,8 @@ def _load_from_directory(
 
 def _import_module(file_path: Path) -> ModuleType | None:
     """Import a Python module from a file path, returning None on failure."""
-    module_name = f"pixelpulse_plugin_{file_path.stem}_{abs(hash(file_path))}"
+    module_hash = hashlib.md5(str(file_path).encode(), usedforsecurity=False).hexdigest()[:8]
+    module_name = f"pixelpulse_plugin_{file_path.stem}_{module_hash}"
     spec = importlib.util.spec_from_file_location(module_name, file_path)
     if spec is None or spec.loader is None:
         logger.warning("Could not create import spec for %s", file_path)
