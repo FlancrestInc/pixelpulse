@@ -23,6 +23,8 @@ CONFIG_PATH = BASE_DIR / "backend" / "config.yaml"
 LAYOUT_PATH = BASE_DIR / "backend" / "layout.yaml"
 
 engine = SignalEngine(config_path=str(CONFIG_PATH), layout_path=str(LAYOUT_PATH))
+# Route config-api layout save notifications through the running engine.
+set_layout_event_publisher(engine._broadcast)
 
 
 @asynccontextmanager
@@ -36,7 +38,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PixelPulse", lifespan=lifespan)
-set_layout_event_publisher(engine._broadcast)
 
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend_static")
