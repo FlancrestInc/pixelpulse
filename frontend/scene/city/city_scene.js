@@ -35,6 +35,7 @@ export class CityScene {
     this.root = new PIXI.Container();
     this.actors = [];
     this.actorMeta = [];
+    this.layoutApplied = false;
   }
 
   async init() {
@@ -67,7 +68,7 @@ export class CityScene {
     });
 
     const layoutPlots = this.signalBus.getLayout()?.plots ?? [];
-    if (layoutPlots.length) {
+    if (!this.layoutApplied && layoutPlots.length) {
       this.applyLayout(layoutPlots);
       this.layoutApplied = true;
     }
@@ -98,12 +99,14 @@ export class CityScene {
         label: entry.valve?.label || entry.signal,
         threshold: Number(entry.valve?.alert_threshold ?? 0.85),
         lastSignal: null,
+        lastSignalReceivedAt: null,
       };
       this.actorMeta.push(meta);
 
       if (entry.signal) {
         this.signalBus.subscribe(entry.signal, (signal) => {
           meta.lastSignal = signal;
+          meta.lastSignalReceivedAt = Date.now() / 1000;
           actor.onSignal(signal);
         });
       }
@@ -132,8 +135,9 @@ export class CityScene {
     const nowSec = Date.now() / 1000;
     this.actorMeta.forEach((meta) => {
       const interval = this.signalBus.getPollInterval(meta.signalId);
-      const ts = Number(meta.lastSignal?.timestamp ?? 0);
-      const disconnected = ts > 0 && nowSec - ts > interval * 2;
+      const signalTimestamp = Number(meta.lastSignal?.timestamp ?? 0);
+      const freshnessTimestamp = signalTimestamp > 0 ? signalTimestamp : meta.lastSignalReceivedAt;
+      const disconnected = freshnessTimestamp != null && nowSec - freshnessTimestamp > interval * 2;
       const value = Number(meta.lastSignal?.value ?? 0);
       const active = meta.lastSignal != null;
       const alert = active && Number.isFinite(value) && value > meta.threshold;
