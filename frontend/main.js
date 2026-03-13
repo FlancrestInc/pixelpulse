@@ -137,6 +137,7 @@ window.addEventListener('resize', () => {
 });
 
 signalBus.onLayoutChange((layout) => {
+  if (editController.isEditMode) return;
   layoutSerializer.load(layout);
   cityScene.applyLayout(layoutSerializer.serializeAll().plots);
   signalLibrary.render();
