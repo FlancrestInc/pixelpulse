@@ -26,18 +26,19 @@ export class BuildingPicker {
 
   _bindEvents() {
     document.addEventListener('plot-selected', (event) => {
-      if (!this.editMode || this.moveFromPlot) return;
+      if (!this.editMode) return;
+
+      if (this.moveFromPlot) {
+        this._attemptMove(event.detail.plotId, event.detail.plot);
+        return;
+      }
+
       this.openForPlot(event.detail.plotId, event.detail.plot);
     });
 
     document.addEventListener('building-selected', (event) => {
       if (!this.editMode) return;
       this._openBuildingMenu(event.detail);
-    });
-
-    document.addEventListener('plot-selected', (event) => {
-      if (!this.moveFromPlot || !this.editMode) return;
-      this._attemptMove(event.detail.plotId, event.detail.plot);
     });
   }
 
