@@ -1,18 +1,21 @@
 import { BusStop } from './building_types/bus_stop.js';
 import { WaterTower } from './building_types/water_tower.js';
 import { Windmill } from './building_types/windmill.js';
+import { ServerTower } from './building_types/server_tower.js';
+import { Warehouse } from './building_types/warehouse.js';
+import { PowerStation } from './building_types/power_station.js';
+import { BankTicker } from './building_types/bank_ticker.js';
+import { Cafe } from './building_types/cafe.js';
+import { DriveIn } from './building_types/drive_in.js';
+import { DataVault } from './building_types/data_vault.js';
 
 class PlaceholderBuilding {
   static portType = 'gauge';
-
   static styles = ['default'];
-
   static label = 'Placeholder';
 
   constructor(app, plot, style = 'default') {
-    this.app = app;
-    this.plot = plot;
-    this.style = style;
+    this.app = app; this.plot = plot; this.style = style;
     this.container = new PIXI.Container();
   }
 
@@ -27,38 +30,31 @@ class PlaceholderBuilding {
   }
 
   update() {}
-
   onSignal() {}
-
   setAnimationState() {}
-
-  destroy() {
-    this.container.destroy({ children: true });
-  }
+  destroy() { this.container.destroy({ children: true }); }
 }
 
 export class BuildingType extends PlaceholderBuilding {}
 
 const BUILDING_REGISTRY = new Map();
-
-function register(key, type) {
-  BUILDING_REGISTRY.set(key, type);
-}
+function register(key, type) { BUILDING_REGISTRY.set(key, type); }
 
 register('windmill', Windmill);
 register('water_tower', WaterTower);
 register('bus_stop', BusStop);
-register('warehouse', PlaceholderBuilding);
-register('power_station', PlaceholderBuilding);
-register('server_tower', PlaceholderBuilding);
-register('bank_ticker', PlaceholderBuilding);
+register('server_tower', ServerTower);
+register('warehouse', Warehouse);
+register('power_station', PowerStation);
+register('bank_ticker', BankTicker);
+register('cafe', Cafe);
+register('drive_in', DriveIn);
+register('data_vault', DataVault);
+// Still placeholder — Phase 8a
+register('auth_gate', PlaceholderBuilding);
 register('construction_yard', PlaceholderBuilding);
 register('swimming_pool', PlaceholderBuilding);
-register('cafe', PlaceholderBuilding);
 register('billboard', PlaceholderBuilding);
-register('data_vault', PlaceholderBuilding);
-register('drive_in', PlaceholderBuilding);
-register('auth_gate', PlaceholderBuilding);
 register('city_park', PlaceholderBuilding);
 register('dockyard', PlaceholderBuilding);
 
@@ -67,10 +63,12 @@ export function getBuildingType(key) {
 }
 
 export function listBuildingTypes() {
-  return [...BUILDING_REGISTRY.entries()].map(([id, Type]) => ({
-    id,
-    label: Type.label ?? id,
-    portType: Type.portType ?? 'gauge',
-    styles: Type.styles ?? ['default'],
-  }));
+  return [...BUILDING_REGISTRY.entries()]
+    .filter(([, Type]) => Type !== PlaceholderBuilding)
+    .map(([id, Type]) => ({
+      id,
+      label: Type.label ?? id,
+      portType: Type.portType ?? 'gauge',
+      styles: Type.styles ?? ['default'],
+    }));
 }

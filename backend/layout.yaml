@@ -2,11 +2,41 @@ display:
   plots_per_row: 6
 plots:
 - plot_id: main_1
+  building: server_tower
+  style: rack_classic
+  signal: weather_text
+  valve:
+    range_min: 0
+    range_max: 1
+    alert_threshold: 0.85
+    label: Weather
 - plot_id: main_2
+  building: windmill
+  style: classic_wood
 - plot_id: main_3
+  building: bus_stop
+  style: retro_covered
 - plot_id: main_4
+  building: bank_ticker
+  style: retro_neon
+  signal: cpu_percent
+  valve:
+    range_min: 0
+    range_max: 1
+    alert_threshold: 0.85
+    label: CPU Percent
 - plot_id: main_5
+  building: cafe
+  style: corner_bistro
 - plot_id: main_6
+  building: data_vault
+  style: bunker_classic
 - plot_id: mid_1
+  building: warehouse
+  style: industrial_grey
 - plot_id: mid_2
+  building: power_station
+  style: coal_classic
 - plot_id: mid_3
+  building: drive_in
+  style: classic_50s

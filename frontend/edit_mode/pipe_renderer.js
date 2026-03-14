@@ -99,7 +99,7 @@ export class PipeRenderer {
   /** Set edit mode visibility and pointer interaction state. */
   setEditMode(active) {
     this.editMode = active;
-    this.canvas.style.pointerEvents = active ? 'auto' : 'none';
+    // Canvas stays pointer-events:none always — events are caught on window instead.
     if (!active) {
       this.hoveredPipeKey = null;
       this.valveButton.style.display = 'none';
@@ -156,19 +156,14 @@ export class PipeRenderer {
       }, RESIZE_DEBOUNCE_MS);
     });
 
-    this.canvas.addEventListener('mousemove', (event) => {
+    window.addEventListener('mousemove', (event) => {
       if (!this.editMode) return;
       const match = this._findPipeAtPoint(event.clientX, event.clientY);
       this.hoveredPipeKey = match?.toPlotId ?? null;
       this._positionValveButton(match);
     });
 
-    this.canvas.addEventListener('mouseleave', () => {
-      this.hoveredPipeKey = null;
-      this.valveButton.style.display = 'none';
-    });
-
-    this.canvas.addEventListener('click', (event) => {
+    window.addEventListener('click', (event) => {
       if (!this.editMode) return;
       const match = this._findPipeAtPoint(event.clientX, event.clientY);
       if (!match) return;

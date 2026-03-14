@@ -42,24 +42,25 @@ export class Windmill {
     hub.drawCircle(0, -116, 10);
     hub.endFill();
 
+    // Position the blades container at the hub centre so rotation pivots correctly
+    this.blades.y = -116;
     for (let i = 0; i < 4; i += 1) {
       const blade = new PIXI.Graphics();
       blade.beginFill(p.blade);
       blade.drawRoundedRect(-7, -85, 14, 92, 4);
       blade.endFill();
       blade.rotation = i * (Math.PI / 2);
-      blade.y = -116;
       this.blades.addChild(blade);
     }
 
     this.alertOverlay.beginFill(0xff3c3c, 0.55);
-    this.alertOverlay.drawCircle(0, -84, 80);
+    this.alertOverlay.drawCircle(0, -116, 80);
     this.alertOverlay.endFill();
     this.alertOverlay.visible = false;
 
     this.disconnectIcon = new PIXI.Text('⚡', { fill: 0xffdf6a, fontSize: 20, fontWeight: 'bold' });
     this.disconnectIcon.anchor.set(0.5);
-    this.disconnectIcon.position.set(0, -170);
+    this.disconnectIcon.position.set(0, -210);
     this.disconnectIcon.visible = false;
 
     this.container.addChild(base, roof, this.blades, hub, this.alertOverlay, this.disconnectIcon);

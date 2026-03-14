@@ -1,6 +1,7 @@
 import { getBuildingType } from './buildings.js';
 import { CityEnvironment } from './environment.js';
 import { PlotManager } from './plot_manager.js';
+import { VehicleManager } from './vehicles.js';
 
 const REF_WIDTH = 1920;
 const REF_HEIGHT = 1080;
@@ -37,6 +38,7 @@ export class CityScene {
     this.actorMeta = [];
     this.layoutApplied = false;
     this.animationsPaused = false;
+    this.vehicleManager = null;
   }
 
   async init() {
@@ -52,8 +54,13 @@ export class CityScene {
     midStrip.beginFill(0x3d4554); midStrip.drawRect(0, 830, REF_WIDTH, 128); midStrip.endFill();
     this.root.addChild(midStrip);
 
+    this.vehicleManager = new VehicleManager(this.root);
     this.plotManager = new PlotManager(this.root, buildPlotDefs());
     this.world.addChild(this.root);
+
+    this.signalBus.subscribe('net_bytes_recv', (signal) => {
+      if (this.vehicleManager) this.vehicleManager.onSignal(signal);
+    });
 
     this.signalBus.subscribe('sky_time', (signal) => {
       this.environment.timeOfDay = Math.max(0, Math.min(Number(signal?.value ?? 0), 1));
@@ -146,6 +153,7 @@ export class CityScene {
 
   update(delta) {
     this.environment.update(delta);
+    if (this.vehicleManager) this.vehicleManager.update(delta);
     if (this.animationsPaused) return;
 
     const nowSec = Date.now() / 1000;

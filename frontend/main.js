@@ -1,4 +1,5 @@
 import { EditController } from './edit_mode/edit_controller.js';
+import { makeMenu, makeMenuButton, positionWithin, dismissOnOutsideClick } from './ui_utils.js';
 import { BuildingPicker } from './edit_mode/building_picker.js';
 import { LayoutSerializer } from './edit_mode/layout_serializer.js';
 import { PipeRenderer } from './edit_mode/pipe_renderer.js';
@@ -11,8 +12,10 @@ const appHost = document.getElementById('app');
 const app = new PIXI.Application({
   resizeTo: window,
   backgroundColor: 0x1a1a2e,
-  antialias: true,
+  antialias: false,           // disable for performance
   autoDensity: true,
+  resolution: Math.min(window.devicePixelRatio || 1, 1.5),  // cap at 1.5x for perf
+  powerPreference: 'high-performance',
 });
 appHost.appendChild(app.view);
 
@@ -94,23 +97,22 @@ document.addEventListener('layout-updated', () => {
 
 document.addEventListener('pipe-menu', (event) => {
   const { plotId, x, y } = event.detail;
-  const menu = document.createElement('div');
-  menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:67;background:rgba(18,23,35,.97);border:1px solid rgba(140,165,207,.4);border-radius:8px;padding:6px;`;
-  menu.innerHTML = '<button id="cfg">Configure</button><button id="rm">Remove pipe</button>';
-  document.body.appendChild(menu);
-  menu.querySelector('#cfg').onclick = () => {
+  const menu = makeMenu(67);
+  makeMenuButton(menu, 'Configure valve', () => {
     document.dispatchEvent(new CustomEvent('pipe-selected', { detail: { plotId, x, y } }));
     menu.remove();
-  };
-  menu.querySelector('#rm').onclick = () => {
+  }, { icon: '⚙' });
+  makeMenuButton(menu, 'Remove pipe', () => {
     layoutSerializer.removePipe(plotId);
     const layout = layoutSerializer.serializeAll();
     cityScene.applyLayout(layout.plots);
     pipeRenderer.syncFromLayout(layout.plots);
     signalLibrary.render();
     menu.remove();
-  };
-  window.setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  }, { icon: '✕', color: '#f07a7a' });
+  positionWithin(menu, x + 8, y + 8);
+  menu.style.display = 'block';
+  dismissOnOutsideClick(menu, () => menu.remove());
 });
 
 document.addEventListener('plot-selected', (event) => {
