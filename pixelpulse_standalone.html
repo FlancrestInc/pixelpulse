@@ -1,0 +1,1596 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PixelPulse</title>
+    <style>
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #1a1a2e;
+      }
+      #app { width: 100%; height: 100%; }
+      canvas { display: block; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.x/dist/pixi.min.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+
+// ─── sprite_sheet.js ──────────────────────────────────────────────────────────
+
+const ATLAS_PATHS = {
+  city_sprites: '/assets/sprites/city_sprites.json',
+};
+
+const atlasCache = new Map();
+
+function buildFallback(targetH = 64, fallback = {}) {
+  const width = fallback.width ?? Math.max(20, targetH * 0.65);
+  const height = fallback.height ?? targetH;
+  const color = fallback.color ?? 0x6c7a89;
+  const alpha = fallback.alpha ?? 1;
+  const rect = new PIXI.Graphics();
+  rect.beginFill(color, alpha);
+  rect.drawRoundedRect(-width / 2, -height, width, height, 6);
+  rect.endFill();
+  return rect;
+}
+
+async function getAtlas(atlasName) {
+  if (atlasCache.has(atlasName)) return atlasCache.get(atlasName);
+  const atlasPath = ATLAS_PATHS[atlasName];
+  if (!atlasPath) { atlasCache.set(atlasName, null); return null; }
+  try {
+    const sheet = await PIXI.Assets.load(atlasPath);
+    atlasCache.set(atlasName, sheet ?? null);
+    return sheet ?? null;
+  } catch {
+    atlasCache.set(atlasName, null);
+    return null;
+  }
+}
+
+async function kSprite(atlasName, targetH = 64, fallback = {}) {
+  const [sheetName, frameName] = atlasName.includes(':') ? atlasName.split(':') : ['city_sprites', atlasName];
+  const atlas = await getAtlas(sheetName);
+  const texture = atlas?.textures?.[frameName];
+  if (!texture) return buildFallback(targetH, fallback);
+  const sprite = new PIXI.Sprite(texture);
+  const scale = targetH / sprite.height;
+  sprite.scale.set(scale);
+  sprite.anchor.set(0.5, 1);
+  return sprite;
+}
+
+async function kRand(names, targetH = 64, fallback = {}) {
+  if (!Array.isArray(names) || names.length === 0) return buildFallback(targetH, fallback);
+  const index = Math.floor(Math.random() * names.length);
+  return kSprite(names[index], targetH, fallback);
+}
+
+// ─── signal_bus.js ────────────────────────────────────────────────────────────
+
+class SignalBus {
+  constructor() {
+    this.listeners = new Map();
+    this.anyListeners = new Set();
+    this.modeListeners = new Set();
+    this.layoutListeners = new Set();
+    this.layoutSaveListeners = new Set();
+    this.socket = null;
+    this.reconnectTimer = null;
+    this.demoTimer = null;
+    this.demoStartTimer = null;
+    this.connected = false;
+    this.liveReady = false;
+    this.demoActive = false;
+    this.signalState = new Map();
+    this.pollIntervals = new Map();
+    this.layout = { plots: [] };
+  }
+
+  start() { this._connect(); this._scheduleDemoFallback(); }
+
+  stop() {
+    if (this.socket) this.socket.close();
+    if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
+    if (this.demoStartTimer) window.clearTimeout(this.demoStartTimer);
+    this._stopDemoMode();
+  }
+
+  subscribe(signalId, cb) {
+    if (!this.listeners.has(signalId)) this.listeners.set(signalId, new Set());
+    this.listeners.get(signalId).add(cb);
+    const current = this.signalState.get(signalId);
+    if (current) cb(current);
+    return () => this.listeners.get(signalId)?.delete(cb);
+  }
+
+  subscribeAny(cb) { this.anyListeners.add(cb); return () => this.anyListeners.delete(cb); }
+  onModeChange(cb) { this.modeListeners.add(cb); cb(this.getMode()); return () => this.modeListeners.delete(cb); }
+  getSignal(signalId) { return this.signalState.get(signalId) ?? null; }
+  getPollInterval(signalId) { return this.pollIntervals.get(signalId) ?? 5; }
+  getLayout() { return this.layout; }
+  getMode() { return this.liveReady ? 'live' : 'demo'; }
+
+  onLayoutChange(cb) {
+    this.layoutListeners.add(cb);
+    if (Array.isArray(this.layout?.plots) && this.layout.plots.length > 0) cb(this.layout);
+    return () => this.layoutListeners.delete(cb);
+  }
+
+  onLayoutSaveStatus(cb) { this.layoutSaveListeners.add(cb); return () => this.layoutSaveListeners.delete(cb); }
+  _emitMode() { const mode = this.getMode(); this.modeListeners.forEach((cb) => cb(mode)); }
+
+  _connect() {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+    try { this.socket = new WebSocket(wsUrl); } catch { this._scheduleReconnect(); return; }
+    this.socket.addEventListener('open', () => { this.connected = true; this._stopDemoMode(); });
+    this.socket.addEventListener('message', (event) => {
+      let msg; try { msg = JSON.parse(event.data); } catch { return; }
+      this._handleMessage(msg);
+    });
+    this.socket.addEventListener('close', () => {
+      this.connected = false; this.liveReady = false; this._emitMode();
+      this._scheduleReconnect(); this._scheduleDemoFallback();
+    });
+    this.socket.addEventListener('error', () => { this.socket?.close(); });
+  }
+
+  _scheduleReconnect() {
+    if (this.reconnectTimer) return;
+    this.reconnectTimer = window.setTimeout(() => { this.reconnectTimer = null; this._connect(); }, 3000);
+  }
+
+  _scheduleDemoFallback() {
+    if (this.connected || this.demoActive || this.demoStartTimer) return;
+    this.demoStartTimer = window.setTimeout(() => { this.demoStartTimer = null; if (!this.connected) this._startDemoMode(); }, 5000);
+  }
+
+  _startDemoMode() {
+    if (this.demoActive) return;
+    this.demoActive = true; this.liveReady = false; this._emitMode();
+    const t0 = performance.now();
+    this.demoTimer = window.setInterval(() => {
+      const t = (performance.now() - t0) / 1000;
+      this._emitSignal({ id: 'cpu_load', type: 'gauge', value: 0.5 + Math.sin(t * 0.85) * 0.42, label: 'CPU Load', source: 'demo', timestamp: Date.now() / 1000 });
+      this._emitSignal({ id: 'memory_used', type: 'gauge', value: 0.45 + Math.sin(t * 0.48 + 1.2) * 0.38, label: 'Memory Used', source: 'demo', timestamp: Date.now() / 1000 });
+      this._emitSignal({ id: 'weather_text', type: 'text', value: ['Clear', 'Cloudy', 'Rain showers', 'Windy'][Math.floor(t / 4) % 4], label: 'Weather', source: 'demo', timestamp: Date.now() / 1000 });
+      this._emitSignal({ id: 'sky_time', type: 'gauge', value: ((t % 600) / 600), label: 'Sky Time', source: 'demo', timestamp: Date.now() / 1000 });
+    }, 600);
+  }
+
+  _stopDemoMode() {
+    if (this.demoTimer) { window.clearInterval(this.demoTimer); this.demoTimer = null; }
+    this.demoActive = false;
+  }
+
+  _handleMessage(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'handshake') {
+      this.layout = msg.layout ?? { plots: [] };
+      this.layoutListeners.forEach((cb) => cb(this.layout));
+      const signals = msg.signals ?? {};
+      const hasSkyTime = Object.values(signals).some((s) => s?.id === 'sky_time');
+      if (hasSkyTime) { this.liveReady = true; this._emitMode(); }
+      Object.values(signals).forEach((s) => this._emitSignal(s));
+      this._readPollIntervals(msg.config);
+      return;
+    }
+    if (msg.type === 'signal') { this._emitSignal(msg.signal); return; }
+    if (msg.type === 'signal_update') { (msg.signals ?? []).forEach((s) => this._emitSignal(s)); return; }
+    if (msg.type === 'layout_saved') {
+      if (msg.layout) { this.layout = msg.layout; this.layoutListeners.forEach((cb) => cb(this.layout)); }
+      this.layoutSaveListeners.forEach((cb) => cb({ ok: true }));
+      return;
+    }
+    if (msg.type === 'layout_save_failed') { this.layoutSaveListeners.forEach((cb) => cb({ ok: false })); }
+  }
+
+  _readPollIntervals(config) {
+    this.pollIntervals.clear();
+    (config?.signals ?? []).forEach((entry) => { if (entry?.id) this.pollIntervals.set(entry.id, Number(entry.interval ?? 5)); });
+    if (config?.sky_driver?.id) this.pollIntervals.set(config.sky_driver.id, Number(config.sky_driver.interval ?? 5));
+  }
+
+  _emitSignal(signal) {
+    if (!signal?.id) return;
+    this.signalState.set(signal.id, signal);
+    if (signal.id === 'sky_time' && this.connected) { this.liveReady = true; this._emitMode(); }
+    this.listeners.get(signal.id)?.forEach((cb) => cb(signal));
+    this.anyListeners.forEach((cb) => cb(signal));
+  }
+}
+
+// ─── building_types/windmill.js ───────────────────────────────────────────────
+
+class Windmill {
+  static portType = 'gauge';
+  static styles = ['classic_wood', 'modern_steel', 'rustic_stone'];
+  static label = 'Windmill';
+
+  constructor(app, plot, style = 'classic_wood') {
+    this.app = app; this.plot = plot; this.style = style;
+    this.container = new PIXI.Container();
+    this.blades = new PIXI.Container();
+    this.rotationSpeed = 0.02;
+    this.alertOverlay = new PIXI.Graphics();
+    this.disconnectIcon = null;
+    this.state = 'idle';
+    this.signalValue = 0;
+  }
+
+  init() {
+    const palettes = {
+      classic_wood: { tower: 0x8f6b4f, roof: 0x6d4737, blade: 0xf0e0bf },
+      modern_steel: { tower: 0x9aa7b4, roof: 0x6c7786, blade: 0xe1ecf4 },
+      rustic_stone: { tower: 0x8f8a83, roof: 0x786559, blade: 0xdbcaa7 },
+    };
+    const p = palettes[this.style] ?? palettes.classic_wood;
+    const base = new PIXI.Graphics();
+    base.beginFill(p.tower);
+    base.drawPolygon([-40, 0, 40, 0, 26, -140, -26, -140]);
+    base.endFill();
+    const roof = new PIXI.Graphics();
+    roof.beginFill(p.roof);
+    roof.drawPolygon([-32, -140, 32, -140, 0, -178]);
+    roof.endFill();
+    const hub = new PIXI.Graphics();
+    hub.beginFill(0x2f3b46);
+    hub.drawCircle(0, -116, 10);
+    hub.endFill();
+    for (let i = 0; i < 4; i++) {
+      const blade = new PIXI.Graphics();
+      blade.beginFill(p.blade);
+      blade.drawRoundedRect(-7, -85, 14, 92, 4);
+      blade.endFill();
+      blade.rotation = i * (Math.PI / 2);
+      blade.y = -116;
+      this.blades.addChild(blade);
+    }
+    this.alertOverlay.beginFill(0xff3c3c, 0.55);
+    this.alertOverlay.drawCircle(0, -84, 80);
+    this.alertOverlay.endFill();
+    this.alertOverlay.visible = false;
+    this.disconnectIcon = new PIXI.Text('⚡', { fill: 0xffdf6a, fontSize: 20, fontWeight: 'bold' });
+    this.disconnectIcon.anchor.set(0.5);
+    this.disconnectIcon.position.set(0, -170);
+    this.disconnectIcon.visible = false;
+    this.container.addChild(base, roof, this.blades, hub, this.alertOverlay, this.disconnectIcon);
+    this.container.x = this.plot.x;
+    this.container.y = this.plot.y;
+  }
+
+  update(delta) {
+    this.blades.rotation += this.rotationSpeed * delta;
+    const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);
+    this.alertOverlay.alpha = 0.15 + pulse * 0.55;
+    this.alertOverlay.visible = this.state === 'alert';
+    this.disconnectIcon.visible = this.state === 'disconnected';
+  }
+
+  onSignal(signal) {
+    const n = Math.max(0, Math.min(Number(signal?.value ?? 0), 1));
+    this.signalValue = n;
+    this.rotationSpeed = 0.01 + n * 0.1;
+  }
+
+  setAnimationState(state) {
+    this.state = state;
+    if (state === 'idle') this.rotationSpeed = 0.015;
+    if (state === 'disconnected') this.rotationSpeed *= 0.3;
+  }
+
+  destroy() { this.container.destroy({ children: true }); }
+}
+
+// ─── building_types/water_tower.js ────────────────────────────────────────────
+
+class WaterTower {
+  static portType = 'gauge';
+  static styles = ['classic_wood_leg', 'steel_municipal', 'painted_vintage'];
+  static label = 'Water Tower';
+
+  constructor(app, plot) {
+    this.app = app; this.plot = plot;
+    this.container = new PIXI.Container();
+    this.fill = new PIXI.Graphics();
+    this.alertOverlay = new PIXI.Graphics();
+    this.disconnectIcon = null;
+    this.state = 'idle';
+    this.value = 0.35;
+  }
+
+  init() {
+    const legs = new PIXI.Graphics();
+    legs.lineStyle(6, 0x748399);
+    legs.moveTo(-28, 0); legs.lineTo(-40, -120);
+    legs.moveTo(28, 0); legs.lineTo(40, -120);
+    const tank = new PIXI.Graphics();
+    tank.beginFill(0xa6b4c6);
+    tank.drawRoundedRect(-56, -184, 112, 78, 16);
+    tank.endFill();
+    const windowMask = new PIXI.Graphics();
+    windowMask.beginFill(0xffffff);
+    windowMask.drawRoundedRect(-48, -176, 96, 62, 10);
+    windowMask.endFill();
+    this.fill.beginFill(0x4ba3f0);
+    this.fill.drawRoundedRect(-48, -176, 96, 62, 10);
+    this.fill.endFill();
+    this.fill.mask = windowMask;
+    this.alertOverlay.beginFill(0xff3c3c, 0.55);
+    this.alertOverlay.drawCircle(0, -145, 70);
+    this.alertOverlay.endFill();
+    this.alertOverlay.visible = false;
+    this.disconnectIcon = new PIXI.Text('⚡', { fill: 0xffdf6a, fontSize: 20, fontWeight: 'bold' });
+    this.disconnectIcon.anchor.set(0.5);
+    this.disconnectIcon.position.set(0, -210);
+    this.disconnectIcon.visible = false;
+    this.container.addChild(legs, tank, this.fill, windowMask, this.alertOverlay, this.disconnectIcon);
+    this.container.position.set(this.plot.x, this.plot.y);
+    this._applyFill();
+  }
+
+  _applyFill() {
+    this.fill.scale.y = Math.max(0.05, this.value);
+    this.fill.y = -176 + (1 - this.fill.scale.y) * 62;
+  }
+
+  onSignal(signal) {
+    this.value = Math.max(0, Math.min(Number(signal?.value ?? 0), 1));
+    this._applyFill();
+  }
+
+  update() {
+    const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);
+    this.alertOverlay.alpha = 0.15 + pulse * 0.55;
+    this.alertOverlay.visible = this.state === 'alert';
+    this.disconnectIcon.visible = this.state === 'disconnected';
+  }
+
+  setAnimationState(state) { this.state = state; }
+  destroy() { this.container.destroy({ children: true }); }
+}
+
+// ─── building_types/bus_stop.js ───────────────────────────────────────────────
+
+class BusStop {
+  static portType = 'text';
+  static styles = ['classic_shelter', 'minimal_post', 'retro_covered'];
+  static label = 'Bus Stop';
+
+  constructor(app, plot) {
+    this.app = app; this.plot = plot;
+    this.container = new PIXI.Container();
+    this.signText = null;
+    this.alertOverlay = new PIXI.Graphics();
+    this.disconnectIcon = null;
+    this.state = 'idle';
+  }
+
+  init() {
+    const post = new PIXI.Graphics();
+    post.beginFill(0x6f7a8f);
+    post.drawRect(-5, -130, 10, 130);
+    post.endFill();
+    const panel = new PIXI.Graphics();
+    panel.beginFill(0x2d3345);
+    panel.drawRoundedRect(-68, -148, 136, 58, 8);
+    panel.endFill();
+    panel.lineStyle(2, 0xbfd2eb, 0.8);
+    panel.drawRoundedRect(-66, -146, 132, 54, 6);
+    this.signText = new PIXI.Text('Waiting...', { fill: 0xe8f1ff, fontSize: 13 });
+    this.signText.anchor.set(0.5);
+    this.signText.position.set(0, -120);
+    this.alertOverlay.beginFill(0xff3c3c, 0.55);
+    this.alertOverlay.drawRoundedRect(-74, -154, 148, 70, 8);
+    this.alertOverlay.endFill();
+    this.alertOverlay.visible = false;
+    this.disconnectIcon = new PIXI.Text('⚡', { fill: 0xffdf6a, fontSize: 20, fontWeight: 'bold' });
+    this.disconnectIcon.anchor.set(0.5);
+    this.disconnectIcon.position.set(0, -178);
+    this.disconnectIcon.visible = false;
+    this.container.addChild(post, panel, this.signText, this.alertOverlay, this.disconnectIcon);
+    this.container.position.set(this.plot.x, this.plot.y);
+  }
+
+  onSignal(signal) {
+    const text = String(signal?.value ?? '--');
+    this.signText.text = text.slice(0, 22);
+  }
+
+  update() {
+    const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);
+    this.alertOverlay.alpha = 0.15 + pulse * 0.55;
+    this.alertOverlay.visible = this.state === 'alert';
+    this.disconnectIcon.visible = this.state === 'disconnected';
+  }
+
+  setAnimationState(state) { this.state = state; }
+  destroy() { this.container.destroy({ children: true }); }
+}
+
+// ─── PlaceholderBuilding (for unimplemented building types) ───────────────────
+
+class PlaceholderBuilding {
+  static portType = 'gauge';
+  static styles = ['default'];
+  static label = 'Placeholder';
+
+  constructor(app, plot, style = 'default') {
+    this.app = app; this.plot = plot; this.style = style;
+    this.container = new PIXI.Container();
+  }
+
+  init() {
+    const body = new PIXI.Graphics();
+    body.beginFill(0x4b5b73, 0.9);
+    body.drawRoundedRect(-40, -120, 80, 120, 8);
+    body.endFill();
+    this.container.addChild(body);
+    this.container.x = this.plot.x;
+    this.container.y = this.plot.y;
+  }
+
+  update() {}
+  onSignal() {}
+  setAnimationState() {}
+  destroy() { this.container.destroy({ children: true }); }
+}
+
+// ─── buildings.js ─────────────────────────────────────────────────────────────
+
+const BUILDING_REGISTRY = new Map([
+  ['windmill', Windmill],
+  ['water_tower', WaterTower],
+  ['bus_stop', BusStop],
+  ['warehouse', PlaceholderBuilding],
+  ['power_station', PlaceholderBuilding],
+  ['server_tower', PlaceholderBuilding],
+  ['bank_ticker', PlaceholderBuilding],
+  ['construction_yard', PlaceholderBuilding],
+  ['swimming_pool', PlaceholderBuilding],
+  ['cafe', PlaceholderBuilding],
+  ['billboard', PlaceholderBuilding],
+  ['data_vault', PlaceholderBuilding],
+  ['drive_in', PlaceholderBuilding],
+  ['auth_gate', PlaceholderBuilding],
+  ['city_park', PlaceholderBuilding],
+  ['dockyard', PlaceholderBuilding],
+]);
+
+function getBuildingType(key) { return BUILDING_REGISTRY.get(key) ?? PlaceholderBuilding; }
+
+function listBuildingTypes() {
+  return [...BUILDING_REGISTRY.entries()].map(([id, Type]) => ({
+    id, label: Type.label ?? id, portType: Type.portType ?? 'gauge', styles: Type.styles ?? ['default'],
+  }));
+}
+
+// ─── environment.js ───────────────────────────────────────────────────────────
+
+const SKYLINE_FRAMES = [
+  'building-skyscraper-a.png', 'building-skyscraper-b.png', 'building-skyscraper-c.png',
+  'building-skyscraper-d.png', 'building-skyscraper-e.png',
+];
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function lerpColor(c1, c2, t) {
+  const r = lerp((c1 >> 16) & 0xff, (c2 >> 16) & 0xff, t);
+  const g = lerp((c1 >> 8) & 0xff, (c2 >> 8) & 0xff, t);
+  const b = lerp(c1 & 0xff, c2 & 0xff, t);
+  return ((r & 0xff) << 16) + ((g & 0xff) << 8) + (b & 0xff);
+}
+
+function skyPalette(time01) {
+  const keyframes = [
+    { t: 0.0, top: 0x0b1026, bottom: 0x26143f, mood: 0x5d6f9c },
+    { t: 0.23, top: 0xd57a5e, bottom: 0xf0b37c, mood: 0xb18874 },
+    { t: 0.5, top: 0x67b7ff, bottom: 0xb6ecff, mood: 0x86a9c4 },
+    { t: 0.77, top: 0xec8c61, bottom: 0x70438f, mood: 0x88668d },
+    { t: 1.0, top: 0x0b1026, bottom: 0x26143f, mood: 0x5d6f9c },
+  ];
+  for (let i = 0; i < keyframes.length - 1; i++) {
+    const a = keyframes[i]; const b = keyframes[i + 1];
+    if (time01 >= a.t && time01 <= b.t) {
+      const localT = (time01 - a.t) / (b.t - a.t || 1);
+      return { top: lerpColor(a.top, b.top, localT), bottom: lerpColor(a.bottom, b.bottom, localT), mood: lerpColor(a.mood, b.mood, localT) };
+    }
+  }
+  return keyframes[0];
+}
+
+function drawGradient(ctx, canvas, texture, top, bottom) {
+  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  gradient.addColorStop(0, `#${top.toString(16).padStart(6, '0')}`);
+  gradient.addColorStop(1, `#${bottom.toString(16).padStart(6, '0')}`);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  texture.baseTexture.update();
+}
+
+class CityEnvironment {
+  constructor(stage, width, height) {
+    this.stage = stage; this.width = width; this.height = height;
+    this.container = new PIXI.Container();
+    this.skyline = new PIXI.Container();
+    this.hills = new PIXI.Container();
+    this.timeOfDay = 0;
+    this.followSystemClock = true;
+    this.gradientCanvas = document.createElement('canvas');
+    this.gradientCanvas.width = 8; this.gradientCanvas.height = 256;
+    this.gradientCtx = this.gradientCanvas.getContext('2d');
+    this.gradientTexture = PIXI.Texture.from(this.gradientCanvas);
+    this.sky = new PIXI.Sprite(this.gradientTexture);
+    this.sky.width = width; this.sky.height = height * 0.56;
+    this.container.addChild(this.sky, this.skyline, this.hills);
+    this.stage.addChild(this.container);
+    this.lastPalette = null;
+  }
+
+  async init() { this.buildHillRow(); await this.buildSkyline(); this.tickClock(); }
+
+  tickClock() {
+    const now = new Date();
+    const seconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+    this.timeOfDay = seconds / 86400;
+  }
+
+  buildHillRow() {
+    const y = this.height * 0.52;
+    for (let i = 0; i < 8; i++) {
+      const hill = new PIXI.Graphics();
+      const w = 280 + (i % 3) * 90; const h = 85 + (i % 4) * 20;
+      hill.beginFill(0x30495f, 0.75);
+      hill.drawEllipse(0, 0, w, h);
+      hill.endFill();
+      hill.x = i * 260 - 80; hill.y = y + (i % 2) * 20;
+      this.hills.addChild(hill);
+    }
+  }
+
+  async buildSkyline() {
+    const y = this.height * 0.5;
+    for (let i = 0; i < 22; i++) {
+      const node = await kRand(SKYLINE_FRAMES, 190 + Math.random() * 130, { color: 0x364154 });
+      node.x = 40 + i * 90 + Math.random() * 30;
+      node.y = y + 40 + Math.random() * 20;
+      node.alpha = 0.86;
+      this.skyline.addChild(node);
+    }
+  }
+
+  update() {
+    if (this.followSystemClock) this.tickClock();
+    const palette = skyPalette(this.timeOfDay);
+    if (!this.lastPalette || this.lastPalette.top !== palette.top || this.lastPalette.bottom !== palette.bottom) {
+      drawGradient(this.gradientCtx, this.gradientCanvas, this.gradientTexture, palette.top, palette.bottom);
+      this.lastPalette = palette;
+    }
+    this.skyline.children.forEach((child, i) => {
+      child.tint = palette.mood;
+      child.alpha = 0.65 + Math.sin(performance.now() * 0.0003 + i) * 0.04;
+    });
+    this.hills.tint = lerpColor(0x2d5064, 0x20253a, Math.abs(0.5 - this.timeOfDay) * 2);
+  }
+}
+
+// ─── plot_manager.js ──────────────────────────────────────────────────────────
+
+class PlotManager {
+  constructor(parent, plotDefs) {
+    this.parent = parent;
+    this.plots = new Map();
+    this.container = new PIXI.Container();
+    this.parent.addChild(this.container);
+    this.editMode = false;
+    this.highlightProgress = 0;
+
+    plotDefs.forEach((plot) => {
+      const container = new PIXI.Container();
+      container.x = plot.x; container.y = plot.y;
+      container.eventMode = 'none';
+      const pad = new PIXI.Graphics();
+      const overlay = new PIXI.Graphics();
+      const icon = new PIXI.Graphics();
+      const hoverGlow = new PIXI.Graphics();
+      hoverGlow.alpha = 0;
+      container.addChild(pad, hoverGlow, overlay, icon);
+      this.container.addChild(container);
+      const state = { ...plot, state: 'empty', node: container, pad, overlay, icon, hoverGlow, layout: null };
+      this.plots.set(plot.id, state);
+      this._wireInteractions(state);
+      this._drawPlot(state);
+    });
+  }
+
+  setEditMode(active) {
+    this.editMode = active;
+    this.plots.forEach((plot) => {
+      plot.node.eventMode = active ? 'static' : 'none';
+      plot.node.cursor = active ? 'pointer' : 'default';
+      this._drawPlot(plot);
+    });
+  }
+
+  setHighlightProgress(progress) {
+    this.highlightProgress = Math.max(0, Math.min(progress, 1));
+    this.plots.forEach((plot) => this._drawPlot(plot));
+  }
+
+  setLayout(layoutPlots = []) {
+    this.plots.forEach((plot) => { plot.layout = null; plot.state = 'empty'; this._drawPlot(plot); });
+    layoutPlots.forEach((entry) => {
+      const plot = this.plots.get(entry.plot_id);
+      if (!plot) return;
+      plot.layout = entry;
+      plot.state = entry.building ? 'active' : entry.signal ? 'zoned' : 'empty';
+      this._drawPlot(plot);
+    });
+  }
+
+  applyEntry(entry) {
+    const plot = this.plots.get(entry.plot_id);
+    if (!plot) return;
+    plot.layout = { ...plot.layout, ...entry };
+    plot.state = entry.building ? 'active' : entry.signal ? 'zoned' : 'empty';
+    this._drawPlot(plot);
+  }
+
+  getPlot(plotId) { return this.plots.get(plotId) ?? null; }
+  entries() { return [...this.plots.values()]; }
+
+  _wireInteractions(plot) {
+    plot.node.on('pointerover', () => { if (!this.editMode) return; plot.hoverGlow.alpha = 0.9; });
+    plot.node.on('pointerout', () => { plot.hoverGlow.alpha = 0; });
+    plot.node.on('pointertap', () => {
+      if (!this.editMode) return;
+      document.dispatchEvent(new CustomEvent('plot-selected', { detail: { plotId: plot.id, plot } }));
+    });
+  }
+
+  _drawPortIcon(graphics, type = 'gauge', x = 0, y = 0, size = 10, color = 0xd8ebff) {
+    graphics.lineStyle(2, color, 1);
+    if (type === 'text') {
+      graphics.drawRoundedRect(x - size, y - size * 0.65, size * 2, size * 1.3, 3);
+      graphics.moveTo(x - size * 0.7, y - 1); graphics.lineTo(x + size * 0.7, y - 1);
+      graphics.moveTo(x - size * 0.7, y + 3); graphics.lineTo(x + size * 0.7, y + 3);
+      return;
+    }
+    if (type === 'event') {
+      graphics.moveTo(x - size * 0.4, y - size); graphics.lineTo(x + size * 0.1, y - size * 0.1);
+      graphics.lineTo(x - size * 0.05, y - size * 0.1); graphics.lineTo(x + size * 0.45, y + size);
+      graphics.lineTo(x - size * 0.2, y + size * 0.15); graphics.lineTo(x + size * 0.02, y + size * 0.15);
+      graphics.closePath(); return;
+    }
+    if (type === 'state') {
+      graphics.drawRoundedRect(x - size * 0.55, y - size, size * 1.1, size * 2, 5);
+      graphics.beginFill(color, 0.8);
+      graphics.drawCircle(x, y - size * 0.5, size * 0.2);
+      graphics.drawCircle(x, y, size * 0.2);
+      graphics.drawCircle(x, y + size * 0.5, size * 0.2);
+      graphics.endFill(); return;
+    }
+    graphics.drawCircle(x, y, size);
+    graphics.moveTo(x, y); graphics.lineTo(x + size * 0.65, y - size * 0.35);
+    if (type === 'rate') { graphics.moveTo(x - size * 0.7, y + size * 0.7); graphics.lineTo(x + size * 0.7, y + size * 0.7); }
+  }
+
+  _drawPlot(plot) {
+    const portType = plot.layout?.port_type ?? plot.layout?.signal_type ?? 'gauge';
+    plot.pad.clear(); plot.overlay.clear(); plot.icon.clear(); plot.hoverGlow.clear();
+    const color = plot.state === 'active' ? 0x4a6e53 : plot.state === 'zoned' ? 0x5c5578 : 0x2f5e48;
+    const line = plot.state === 'active' ? 0x9ad7a6 : plot.state === 'zoned' ? 0xb7ace6 : 0x8fd7a8;
+    plot.pad.beginFill(color, 0.9); plot.pad.drawRoundedRect(-86, 0, 172, 24, 8); plot.pad.endFill();
+    plot.pad.lineStyle(2, line, 0.8); plot.pad.drawRoundedRect(-82, 4, 164, 16, 6);
+    plot.hoverGlow.beginFill(0x8cf9d0, 0.25); plot.hoverGlow.drawRoundedRect(-96, -10, 192, 44, 10); plot.hoverGlow.endFill();
+    if (this.editMode && plot.state === 'empty') {
+      plot.overlay.lineStyle(2, 0xa5f8c6, 0.65 * this.highlightProgress);
+      plot.overlay.drawRoundedRect(-90, -4, 180, 32, 10);
+      plot.overlay.beginFill(0x8effcb, 0.06 * this.highlightProgress);
+      plot.overlay.drawRoundedRect(-90, -4, 180, 32, 10); plot.overlay.endFill();
+    }
+    if (this.editMode && plot.state === 'zoned') {
+      plot.overlay.beginFill(0x323a4d, 0.9); plot.overlay.drawRoundedRect(-10, -28, 20, 28, 5); plot.overlay.endFill();
+      this._drawPortIcon(plot.icon, portType, 0, -42, 10, 0xf7f2c7);
+      plot.icon.alpha = 0.35 + this.highlightProgress * 0.65;
+    }
+    if (this.editMode && plot.state === 'active') {
+      plot.overlay.lineStyle(2, 0xffec9d, 0.5 + this.highlightProgress * 0.4);
+      plot.overlay.drawRoundedRect(-88, -4, 176, 32, 10);
+      this._drawPortIcon(plot.icon, portType, 56, -34, 9, 0xfff4bf);
+      plot.icon.alpha = this.highlightProgress;
+    }
+  }
+}
+
+// ─── city_scene.js ────────────────────────────────────────────────────────────
+
+const REF_WIDTH = 1920;
+const REF_HEIGHT = 1080;
+
+function createRoad(y, height, color) {
+  const road = new PIXI.Graphics();
+  road.beginFill(color);
+  road.drawRect(0, y, REF_WIDTH, height);
+  road.endFill();
+  road.lineStyle(3, 0xd7d8de, 0.8);
+  for (let x = 24; x < REF_WIDTH; x += 90) {
+    road.moveTo(x, y + height / 2);
+    road.lineTo(x + 44, y + height / 2);
+  }
+  return road;
+}
+
+function buildPlotDefs() {
+  const defs = [];
+  for (let i = 0; i < 6; i++) defs.push({ id: `main_${i + 1}`, x: 250 + i * 285, y: 688 });
+  for (let i = 0; i < 3; i++) defs.push({ id: `mid_${i + 1}`, x: 520 + i * 420, y: 888 });
+  return defs;
+}
+
+class CityScene {
+  constructor(app, world, signalBus, tooltip) {
+    this.app = app; this.world = world; this.signalBus = signalBus; this.tooltip = tooltip;
+    this.root = new PIXI.Container();
+    this.actors = []; this.actorMeta = [];
+    this.layoutApplied = false;
+    this.animationsPaused = false;
+  }
+
+  async init() {
+    this.environment = new CityEnvironment(this.root, REF_WIDTH, REF_HEIGHT);
+    await this.environment.init();
+
+    this.root.addChild(createRoad(560, 74, 0x2c3040));
+    const mainStrip = new PIXI.Graphics();
+    mainStrip.beginFill(0x414f64); mainStrip.drawRect(0, 635, REF_WIDTH, 130); mainStrip.endFill();
+    this.root.addChild(mainStrip);
+    this.root.addChild(createRoad(760, 70, 0x272c3b));
+    const midStrip = new PIXI.Graphics();
+    midStrip.beginFill(0x3d4554); midStrip.drawRect(0, 830, REF_WIDTH, 128); midStrip.endFill();
+    this.root.addChild(midStrip);
+
+    this.plotManager = new PlotManager(this.root, buildPlotDefs());
+    this.world.addChild(this.root);
+
+    this.signalBus.subscribe('sky_time', (signal) => {
+      this.environment.timeOfDay = Math.max(0, Math.min(Number(signal?.value ?? 0), 1));
+      this.environment.followSystemClock = false;
+    });
+
+    this.signalBus.subscribeAny(() => {
+      const layoutPlots = this.signalBus.getLayout()?.plots ?? [];
+      if (!this.layoutApplied && layoutPlots.length) { this.applyLayout(layoutPlots); this.layoutApplied = true; }
+    });
+
+    const layoutPlots = this.signalBus.getLayout()?.plots ?? [];
+    if (!this.layoutApplied && layoutPlots.length) { this.applyLayout(layoutPlots); this.layoutApplied = true; }
+  }
+
+  setSkyBrightness(multiplier) { this.environment.container.alpha = Math.max(0, Math.min(multiplier, 1)); }
+  setAnimationPaused(paused) { this.animationsPaused = paused; }
+
+  applyLayout(layoutPlots) {
+    this.actors.forEach((actor) => actor.destroy());
+    this.actors = []; this.actorMeta = [];
+    this.plotManager.setLayout(layoutPlots);
+
+    layoutPlots.forEach((entry) => {
+      if (!entry.building) return;
+      const plot = this.plotManager.getPlot(entry.plot_id);
+      if (!plot) return;
+      const BuildingClass = getBuildingType(entry.building);
+      const actor = new BuildingClass(this.app, plot, entry.style);
+      actor.init();
+      actor.container.eventMode = 'static';
+      actor.container.cursor = 'pointer';
+      this._attachTooltip(actor, entry);
+      actor.container.on('pointertap', (e) => {
+        const pt = e.data.global;
+        document.dispatchEvent(new CustomEvent('building-selected', { detail: { plotId: entry.plot_id, buildingId: entry.building, x: pt.x, y: pt.y } }));
+      });
+      this.root.addChild(actor.container);
+      this.actors.push(actor);
+      const meta = { actor, signalId: entry.signal, label: entry.valve?.label || entry.signal, threshold: Number(entry.valve?.alert_threshold ?? 0.85), lastSignal: null, lastSignalReceivedAt: null };
+      this.actorMeta.push(meta);
+      if (entry.signal) {
+        this.signalBus.subscribe(entry.signal, (signal) => {
+          meta.lastSignal = signal; meta.lastSignalReceivedAt = Date.now() / 1000;
+          if (!this.animationsPaused) actor.onSignal(signal);
+        });
+      }
+    });
+  }
+
+  _attachTooltip(actor, entry) {
+    actor.container.on('pointerover', () => {
+      const signal = this.signalBus.getSignal(entry.signal);
+      this.tooltip.style.display = 'block';
+      this.tooltip.innerHTML = `<strong>${actor.constructor.label || entry.building}</strong><br>${entry.valve?.label || entry.signal || 'Unwired'}: ${signal?.value ?? '--'}`;
+    });
+    actor.container.on('pointerout', () => { this.tooltip.style.display = 'none'; });
+    actor.container.on('pointermove', (e) => {
+      const pt = e.data.global;
+      this.tooltip.style.left = `${pt.x + 12}px`;
+      this.tooltip.style.top = `${pt.y + 12}px`;
+    });
+  }
+
+  update(delta) {
+    this.environment.update(delta);
+    if (this.animationsPaused) return;
+    const nowSec = Date.now() / 1000;
+    this.actorMeta.forEach((meta) => {
+      const interval = this.signalBus.getPollInterval(meta.signalId);
+      const signalTimestamp = Number(meta.lastSignal?.timestamp ?? 0);
+      const freshnessTimestamp = signalTimestamp > 0 ? signalTimestamp : meta.lastSignalReceivedAt;
+      const disconnected = freshnessTimestamp != null && nowSec - freshnessTimestamp > interval * 2;
+      const value = Number(meta.lastSignal?.value ?? 0);
+      const active = meta.lastSignal != null;
+      const alert = active && Number.isFinite(value) && value > meta.threshold;
+      if (disconnected) meta.actor.setAnimationState('disconnected');
+      else if (alert) meta.actor.setAnimationState('alert');
+      else if (active) meta.actor.setAnimationState('active');
+      else meta.actor.setAnimationState('idle');
+    });
+    this.actors.forEach((actor) => actor.update(delta));
+  }
+}
+
+// ─── layout_serializer.js (minimal — standalone only needs save/load) ─────────
+
+class LayoutSerializer {
+  constructor({ initialLayout = { plots: [] }, plotManager = null, pipeRenderer = null } = {}) {
+    this.plotManager = plotManager; this.pipeRenderer = pipeRenderer;
+    this.plotMap = new Map(); this.display = { plots_per_row: 6 };
+    this.load(initialLayout);
+  }
+
+  load(layout = { plots: [] }) {
+    this.plotMap.clear();
+    const ppr = Number(layout?.display?.plots_per_row);
+    this.display.plots_per_row = Number.isFinite(ppr) && ppr > 0 ? ppr : 6;
+    (layout?.plots ?? []).forEach((entry) => {
+      if (!entry?.plot_id) return;
+      this.plotMap.set(entry.plot_id, { plot_id: entry.plot_id, signal: entry.signal ?? null, building: entry.building ?? null, style: entry.style ?? null, valve: entry.valve ? { ...entry.valve } : null });
+    });
+    this.plotManager?.setLayout(this.serializeAll().plots);
+    this.pipeRenderer?.syncFromLayout(this.serializeAll().plots);
+  }
+
+  ensurePlot(plotId) {
+    if (!this.plotMap.has(plotId)) this.plotMap.set(plotId, { plot_id: plotId, signal: null, building: null, style: null, valve: null });
+    return this.plotMap.get(plotId);
+  }
+
+  setPipe(plotId, signalId, valve = null) {
+    const plot = this.ensurePlot(plotId); plot.signal = signalId;
+    plot.valve = valve ? { ...valve } : plot.valve;
+    this.pipeRenderer?.addPipe(signalId, plotId);
+    if (plot.valve) this.pipeRenderer?.updateValve(plotId, plot.valve);
+  }
+
+  removePipe(plotId) {
+    const plot = this.ensurePlot(plotId); plot.signal = null; plot.valve = null;
+    this.pipeRenderer?.removePipe(plotId);
+  }
+
+  setBuilding(plotId, building, style = null) {
+    const plot = this.ensurePlot(plotId); plot.building = building;
+    if (style != null) plot.style = style;
+  }
+
+  removeBuilding(plotId) { const plot = this.ensurePlot(plotId); plot.building = null; plot.style = null; }
+  setValve(plotId, valve) { const plot = this.ensurePlot(plotId); plot.valve = { ...valve }; this.pipeRenderer?.updateValve(plotId, plot.valve); }
+
+  removeSignal(signalId) {
+    this.plotMap.forEach((plot) => {
+      if (plot.signal === signalId) { plot.signal = null; plot.building = null; plot.style = null; plot.valve = null; this.pipeRenderer?.removePipe(plot.plot_id); }
+    });
+  }
+
+  moveBuilding(fromPlotId, toPlotId) {
+    const from = this.ensurePlot(fromPlotId); const to = this.ensurePlot(toPlotId);
+    to.building = from.building; to.style = from.style; to.signal = from.signal; to.valve = from.valve ? { ...from.valve } : null;
+    from.building = null; from.style = null; from.signal = null; from.valve = null;
+    this.pipeRenderer?.removePipe(fromPlotId);
+    if (to.signal) { this.pipeRenderer?.addPipe(to.signal, toPlotId); if (to.valve) this.pipeRenderer?.updateValve(toPlotId, to.valve); }
+  }
+
+  serialize() {
+    const plots = this._orderedPlotEntries().map((plot) => {
+      const entry = { plot_id: plot.plot_id };
+      if (plot.building) { entry.building = plot.building; if (plot.style) entry.style = plot.style; }
+      if (plot.signal) { entry.signal = plot.signal; if (plot.valve) entry.valve = { range_min: plot.valve.range_min, range_max: plot.valve.range_max, alert_threshold: plot.valve.alert_threshold, label: plot.valve.label }; }
+      return entry;
+    });
+    return { display: { plots_per_row: this.display.plots_per_row }, plots };
+  }
+
+  serializeAll() {
+    const plots = this._orderedPlotEntries().map((plot) => ({ plot_id: plot.plot_id, signal: plot.signal ?? undefined, building: plot.building ?? undefined, style: plot.style ?? undefined, valve: plot.valve ?? undefined }));
+    return { display: { plots_per_row: this.display.plots_per_row }, plots };
+  }
+
+  async save() {
+    const payload = this.serialize();
+    const response = await fetch('/api/layout', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ layout: payload }) });
+    if (!response.ok) throw new Error(`Layout save failed (${response.status})`);
+    return payload;
+  }
+
+  _orderedPlotEntries() {
+    if (this.plotManager) return this.plotManager.entries().map((plot) => { const existing = this.ensurePlot(plot.id); return { ...existing, plot_id: plot.id }; });
+    return [...this.plotMap.values()].sort((a, b) => a.plot_id.localeCompare(b.plot_id));
+  }
+}
+
+// ─── pipe_renderer.js ─────────────────────────────────────────────────────────
+
+const PIPE_WIDTH = 4;
+const PULSE_DIAMETER = 8;
+const PULSE_TRAVERSE_MS = 2000;
+const RESIZE_DEBOUNCE_MS = 150;
+const PIPE_COLORS = { gauge: '#4fc3f7', rate: '#81c784', text: '#ffb74d', event: '#ce93d8', state: '#ef9a9a' };
+
+class PipeRenderer {
+  constructor({ signalBus, plotManager, world }) {
+    this.signalBus = signalBus; this.plotManager = plotManager; this.world = world;
+    this.pipes = []; this.editMode = false; this.hoveredPipeKey = null;
+    this.highlightedSignalIds = new Set(); this.resizeTimer = null; this._rafId = null;
+    this.canvas = document.createElement('canvas');
+    this.canvas.style.cssText = 'position:fixed;inset:0;z-index:43;pointer-events:none;';
+    document.body.appendChild(this.canvas);
+    this.ctx = this.canvas.getContext('2d');
+    this.valveButton = document.createElement('button');
+    this.valveButton.textContent = '⚙';
+    this.valveButton.setAttribute('aria-label', 'Configure valve');
+    this.valveButton.style.cssText = 'position:fixed;display:none;z-index:69;border:1px solid rgba(255,255,255,.55);background:rgba(21,29,42,.95);color:#fff;border-radius:999px;width:24px;height:24px;cursor:pointer;line-height:20px;';
+    document.body.appendChild(this.valveButton);
+    this._bindEvents(); this._fitCanvas();
+  }
+
+  addPipe(signalId, plotId) {
+    this.pipes = this.pipes.filter((p) => p.toPlotId !== plotId);
+    this.pipes.push({ signalId, toPlotId: plotId, route: [], fromNode: null, valve: null });
+    const route = this._routePipe(signalId, plotId);
+    const pipe = this.pipes.find((p) => p.toPlotId === plotId);
+    if (route && pipe) { pipe.route = route; pipe.fromNode = this._sourceNodeForSignal(signalId); }
+    else this.pipes = this.pipes.filter((p) => p.toPlotId !== plotId);
+  }
+
+  removePipe(plotId) { this.pipes = this.pipes.filter((p) => p.toPlotId !== plotId); if (this.hoveredPipeKey === plotId) this.hoveredPipeKey = null; }
+  updateValve(plotId, valveConfig) { const pipe = this.pipes.find((e) => e.toPlotId === plotId); if (!pipe) return; pipe.valve = valveConfig ? { ...valveConfig } : null; }
+  getLayoutPipes() { return this.pipes.map((pipe) => ({ signalId: pipe.signalId, fromNode: { ...pipe.fromNode }, toPlotId: pipe.toPlotId, route: pipe.route.map((p) => ({ ...p })), valve: pipe.valve ? { ...pipe.valve } : null })); }
+
+  setEditMode(active) {
+    this.editMode = active;
+    this.canvas.style.pointerEvents = active ? 'auto' : 'none';
+    if (!active) { this.hoveredPipeKey = null; this.valveButton.style.display = 'none'; this._stopRenderLoop(); this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height); }
+    else this._startRenderLoop();
+  }
+
+  syncFromLayout(layoutPlots = []) {
+    this.pipes = [];
+    layoutPlots.forEach((entry) => {
+      if (!entry?.plot_id || !entry?.signal) return;
+      this.addPipe(entry.signal, entry.plot_id);
+      const pipe = this.pipes.find((p) => p.toPlotId === entry.plot_id);
+      if (pipe && entry.valve) pipe.valve = { ...entry.valve };
+    });
+  }
+
+  _startRenderLoop() {
+    if (this._rafId != null) return;
+    const tick = () => { if (!this.editMode) { this._rafId = null; return; } this._render(); this._rafId = window.requestAnimationFrame(tick); };
+    this._rafId = window.requestAnimationFrame(tick);
+  }
+
+  _stopRenderLoop() { if (this._rafId != null) { window.cancelAnimationFrame(this._rafId); this._rafId = null; } }
+
+  _bindEvents() {
+    window.addEventListener('resize', () => {
+      if (this.resizeTimer) window.clearTimeout(this.resizeTimer);
+      this.resizeTimer = window.setTimeout(() => { this._fitCanvas(); this._rerouteAll(); }, RESIZE_DEBOUNCE_MS);
+    });
+    this.canvas.addEventListener('mousemove', (e) => {
+      if (!this.editMode) return;
+      const match = this._findPipeAtPoint(e.clientX, e.clientY);
+      this.hoveredPipeKey = match?.toPlotId ?? null;
+      this._positionValveButton(match);
+    });
+    this.canvas.addEventListener('mouseleave', () => { this.hoveredPipeKey = null; this.valveButton.style.display = 'none'; });
+    this.canvas.addEventListener('click', (e) => {
+      if (!this.editMode) return;
+      const match = this._findPipeAtPoint(e.clientX, e.clientY);
+      if (!match) return;
+      document.dispatchEvent(new CustomEvent('pipe-selected', { detail: { plotId: match.toPlotId, x: e.clientX, y: e.clientY } }));
+    });
+    this.valveButton.addEventListener('click', () => {
+      const pipe = this.pipes.find((e) => e.toPlotId === this.hoveredPipeKey);
+      if (!pipe) return;
+      const midpoint = this._routeMidpoint(pipe.route);
+      document.dispatchEvent(new CustomEvent('pipe-selected', { detail: { plotId: pipe.toPlotId, x: midpoint.x, y: midpoint.y } }));
+    });
+    document.addEventListener('signal-highlight', (e) => { const id = e.detail?.signalId; this.highlightedSignalIds.clear(); if (id) this.highlightedSignalIds.add(id); });
+  }
+
+  _fitCanvas() { this.canvas.width = window.innerWidth; this.canvas.height = window.innerHeight; }
+  _rerouteAll() { this.pipes = this.pipes.map((pipe) => { const route = this._routePipe(pipe.signalId, pipe.toPlotId); if (!route) return null; return { ...pipe, fromNode: this._sourceNodeForSignal(pipe.signalId), route }; }).filter(Boolean); }
+  _sourceNodeForSignal(signalId) { const ids = this._sortedSignalIds(); const index = Math.max(0, ids.indexOf(signalId)); const slotWidth = Math.max(window.innerWidth - 420, 160); const spacing = Math.max(120, Math.min(220, slotWidth / Math.max(ids.length, 1))); const x = 360 + spacing * index + spacing * 0.5; const y = window.innerHeight - 24; return { x, y, width: 90, height: 28 }; }
+  _sortedSignalIds() { const ids = new Set(this.pipes.map((p) => p.signalId)); this.plotManager.entries().forEach((plot) => { if (plot.layout?.signal) ids.add(plot.layout.signal); }); return [...ids].sort(); }
+
+  _routePipe(signalId, plotId) {
+    const plot = this.plotManager.getPlot(plotId); if (!plot) return null;
+    const source = this._sourceNodeForSignal(signalId);
+    const start = { x: source.x, y: source.y - source.height * 0.5 };
+    const end = this._plotConnectionPoint(plot);
+    return this._computeOrthogonalRoute(start, end, this._buildingObstacles(plotId));
+  }
+
+  _plotConnectionPoint(plot) { const scale = this.world.scale.x || 1; return { x: this.world.x + plot.x * scale, y: this.world.y + (plot.y + 2) * scale }; }
+  _buildingObstacles(excludePlotId) { const scale = this.world.scale.x || 1; return this.plotManager.entries().filter((p) => p.id !== excludePlotId && p.state === 'active').map((p) => ({ left: this.world.x + (p.x - 95) * scale, right: this.world.x + (p.x + 95) * scale, top: this.world.y + (p.y - 210) * scale, bottom: this.world.y + (p.y + 6) * scale })); }
+
+  _computeOrthogonalRoute(start, end, obstacles) {
+    const lRoutes = [[start, { x: start.x, y: end.y }, end], [start, { x: end.x, y: start.y }, end]];
+    const lCandidate = this._pickBestRoute(lRoutes, obstacles);
+    if (lCandidate) return lCandidate;
+    const xC = [start.x, end.x, (start.x + end.x) * 0.5, start.x - 140, start.x + 140, end.x - 140, end.x + 140];
+    const yC = [start.y, end.y, (start.y + end.y) * 0.5, start.y - 120, end.y + 120];
+    const zRoutes = [];
+    xC.forEach((xMid) => zRoutes.push([start, { x: xMid, y: start.y }, { x: xMid, y: end.y }, end]));
+    yC.forEach((yMid) => zRoutes.push([start, { x: start.x, y: yMid }, { x: end.x, y: yMid }, end]));
+    return this._pickBestRoute(zRoutes, obstacles) ?? [start, { x: start.x, y: end.y }, end];
+  }
+
+  _pickBestRoute(candidates, obstacles) { const scored = candidates.map((route) => { const n = this._normalizeRoute(route); if (n.length < 2) return null; return { route: n, score: this._collisionScore(n, obstacles) * 1_000_000 + this._routeLength(n) }; }).filter(Boolean).sort((a, b) => a.score - b.score); return scored[0]?.route ?? null; }
+  _normalizeRoute(route) { const out = []; route.forEach((p) => { if (!out.length) { out.push({ ...p }); return; } const prev = out[out.length - 1]; if (Math.round(prev.x) === Math.round(p.x) && Math.round(prev.y) === Math.round(p.y)) return; if (out.length >= 2) { const bp = out[out.length - 2]; if ((Math.round(bp.x) === Math.round(prev.x) && Math.round(prev.x) === Math.round(p.x)) || (Math.round(bp.y) === Math.round(prev.y) && Math.round(prev.y) === Math.round(p.y))) { out[out.length - 1] = { ...p }; return; } } out.push({ ...p }); }); return out; }
+  _routeLength(route) { let t = 0; for (let i = 1; i < route.length; i++) t += Math.abs(route[i].x - route[i-1].x) + Math.abs(route[i].y - route[i-1].y); return t; }
+  _collisionScore(route, obstacles) { let c = 0; for (let i = 1; i < route.length; i++) { const s = { a: route[i-1], b: route[i] }; obstacles.forEach((box) => { if (this._segmentIntersectsBox(s, box)) c++; }); } return c; }
+  _segmentIntersectsBox(s, box) { const minX = Math.min(s.a.x, s.b.x), maxX = Math.max(s.a.x, s.b.x), minY = Math.min(s.a.y, s.b.y), maxY = Math.max(s.a.y, s.b.y); if (s.a.x === s.b.x) { return s.a.x >= box.left && s.a.x <= box.right && maxY >= box.top && minY <= box.bottom; } if (s.a.y === s.b.y) { return s.a.y >= box.top && s.a.y <= box.bottom && maxX >= box.left && minX <= box.right; } return false; }
+  _findPipeAtPoint(x, y) { const tol = 8; return this.pipes.find((pipe) => { for (let i = 1; i < pipe.route.length; i++) { const a = pipe.route[i-1], b = pipe.route[i]; if (a.x === b.x) { if (Math.abs(x - a.x) <= tol && y >= Math.min(a.y, b.y) - tol && y <= Math.max(a.y, b.y) + tol) return true; } else if (a.y === b.y) { if (Math.abs(y - a.y) <= tol && x >= Math.min(a.x, b.x) - tol && x <= Math.max(a.x, b.x) + tol) return true; } } return false; }) ?? null; }
+  _positionValveButton(pipe) { if (!pipe || !this.editMode) { this.valveButton.style.display = 'none'; return; } const m = this._routeMidpoint(pipe.route); this.valveButton.style.left = `${Math.round(m.x - 12)}px`; this.valveButton.style.top = `${Math.round(m.y - 12)}px`; this.valveButton.style.display = 'block'; }
+  _routeMidpoint(route) { const length = this._routeLength(route); const target = length * 0.5; let travelled = 0; for (let i = 1; i < route.length; i++) { const a = route[i-1], b = route[i]; const seg = Math.abs(a.x - b.x) + Math.abs(a.y - b.y); if (travelled + seg >= target) { const ratio = seg > 0 ? (target - travelled) / seg : 0; return { x: a.x + (b.x - a.x) * ratio, y: a.y + (b.y - a.y) * ratio }; } travelled += seg; } return route[route.length - 1] ?? { x: 0, y: 0 }; }
+
+  _render() {
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    if (!this.editMode) return;
+    this.pipes.forEach((pipe) => {
+      const signal = this.signalBus.getSignal(pipe.signalId);
+      const color = PIPE_COLORS[signal?.type] ?? PIPE_COLORS.gauge;
+      const highlighted = this.hoveredPipeKey === pipe.toPlotId || this.highlightedSignalIds.has(pipe.signalId);
+      this._drawPipe(pipe.route, highlighted ? '#ffffff' : color);
+      const interval = this.signalBus.getPollInterval(pipe.signalId);
+      const age = signal ? (Date.now() / 1000 - Number(signal.timestamp ?? 0)) : Infinity;
+      if (signal != null && age < interval * 2) this._drawPulse(pipe.route);
+    });
+  }
+
+  _drawPipe(route, color) {
+    this.ctx.fillStyle = color;
+    for (let i = 1; i < route.length; i++) { const a = route[i-1], b = route[i]; if (a.x === b.x) this.ctx.fillRect(a.x - PIPE_WIDTH * 0.5, Math.min(a.y, b.y), PIPE_WIDTH, Math.abs(b.y - a.y)); else this.ctx.fillRect(Math.min(a.x, b.x), a.y - PIPE_WIDTH * 0.5, Math.abs(b.x - a.x), PIPE_WIDTH); }
+    for (let i = 1; i < route.length - 1; i++) this.ctx.fillRect(route[i].x - PIPE_WIDTH * 0.5, route[i].y - PIPE_WIDTH * 0.5, PIPE_WIDTH, PIPE_WIDTH);
+  }
+
+  _drawPulse(route) { const t = (performance.now() % PULSE_TRAVERSE_MS) / PULSE_TRAVERSE_MS; const pos = this._pointAtDistance(route, this._routeLength(route) * t); this.ctx.beginPath(); this.ctx.fillStyle = 'rgba(255,255,255,0.6)'; this.ctx.arc(pos.x, pos.y, PULSE_DIAMETER * 0.5, 0, Math.PI * 2); this.ctx.fill(); }
+  _pointAtDistance(route, distance) { let travelled = 0; for (let i = 1; i < route.length; i++) { const a = route[i-1], b = route[i]; const seg = Math.abs(a.x - b.x) + Math.abs(a.y - b.y); if (travelled + seg >= distance) { const ratio = seg > 0 ? (distance - travelled) / seg : 0; return { x: a.x + (b.x - a.x) * ratio, y: a.y + (b.y - a.y) * ratio }; } travelled += seg; } return route[route.length - 1] ?? { x: 0, y: 0 }; }
+}
+
+// ─── signal_library.js ────────────────────────────────────────────────────────
+
+const SIGNAL_PANEL_WIDTH = 320;
+
+class SignalLibrary {
+  constructor(signalBus, layoutSerializer) {
+    this.signalBus = signalBus; this.layoutSerializer = layoutSerializer;
+    this.signals = new Map(); this.editMode = false; this.dragSignal = null;
+    this._buildDom(); this._bindBus(); this._bindPlotDrop();
+  }
+
+  _buildDom() {
+    this.panel = document.createElement('aside');
+    Object.assign(this.panel.style, { position: 'fixed', top: '0', left: '0', width: `${SIGNAL_PANEL_WIDTH}px`, height: '100%', transform: `translateX(-${SIGNAL_PANEL_WIDTH}px)`, background: 'rgba(16,20,30,0.96)', borderRight: '1px solid rgba(146,183,229,0.3)', color: '#e8f1ff', zIndex: '40', font: '12px/1.4 system-ui, sans-serif', display: 'flex', flexDirection: 'column' });
+    this.panel.innerHTML = `<div style="padding:12px 14px;border-bottom:1px solid rgba(146,183,229,0.2);font-weight:700">Signal Library</div>`;
+    this.inUse = this._section('Connected & in use');
+    this.available = this._section('Connected & available');
+    this.addButton = document.createElement('button');
+    this.addButton.textContent = 'Add Source';
+    this.addButton.style.cssText = 'margin:12px;border:0;border-radius:8px;background:#4b79b9;color:#fff;padding:10px;font-weight:700;cursor:pointer;';
+    this.addButton.addEventListener('click', () => this._openAdapterFlow());
+    this.panel.append(this.inUse.wrap, this.available.wrap, this.addButton);
+    document.body.appendChild(this.panel);
+    this.toast = document.createElement('div');
+    this.toast.style.cssText = 'position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:rgba(23,28,41,0.95);color:#fff;padding:8px 12px;border-radius:8px;display:none;z-index:55;';
+    document.body.appendChild(this.toast);
+  }
+
+  _section(title) { const wrap = document.createElement('section'); wrap.style.cssText = 'padding:10px;overflow:auto;flex:1;'; const heading = document.createElement('div'); heading.textContent = title; heading.style.cssText = 'font-weight:700;color:#b5c9ef;margin-bottom:8px;'; const body = document.createElement('div'); body.style.cssText = 'display:flex;flex-direction:column;gap:8px;'; wrap.append(heading, body); return { wrap, body }; }
+
+  _bindBus() {
+    this.signalBus.subscribeAny((signal) => {
+      if (!signal?.id) return;
+      const existing = this.signals.get(signal.id);
+      this.signals.set(signal.id, { ...(existing ?? signal), ...signal });
+      if (existing) { this._updateSignalValue(signal.id, signal.value); return; }
+      this.render();
+    });
+  }
+
+  _updateSignalValue(signalId, value) { const node = this.panel.querySelector(`[data-signal-id="${CSS.escape(signalId)}"]`); if (!node) return; node.textContent = String(value ?? '--'); }
+
+  _bindPlotDrop() {
+    document.addEventListener('plot-selected', (event) => {
+      if (!this.editMode || !this.dragSignal) return;
+      const { plot } = event.detail; if (!plot) return;
+      const accepted = (plot.layout?.port_type ?? plot.layout?.signal_type ?? this.dragSignal.type ?? 'gauge');
+      if (accepted && accepted !== this.dragSignal.type && !(accepted === 'rate' && this.dragSignal.type === 'gauge')) {
+        this._shake(plot.node); this._showToast('Incompatible signal type'); this.dragSignal = null; return;
+      }
+      const defaultValve = { range_min: 0, range_max: 1, alert_threshold: 0.85, label: this.dragSignal.label || this.dragSignal.id };
+      this.layoutSerializer.setPipe(plot.id, this.dragSignal.id, defaultValve);
+      const current = this.layoutSerializer.ensurePlot(plot.id);
+      if (current.building) this.layoutSerializer.setValve(plot.id, defaultValve);
+      document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'signal-drop' } }));
+      this.dragSignal = null;
+    });
+  }
+
+  _shake(node) { const x0 = node.x; [x0-6,x0+6,x0-3,x0+3,x0].forEach((x,i) => window.setTimeout(() => { node.x = x; }, i * 45)); }
+  _showToast(message) { this.toast.textContent = message; this.toast.style.display = 'block'; window.clearTimeout(this.toastTimer); this.toastTimer = window.setTimeout(() => { this.toast.style.display = 'none'; }, 1400); }
+  setEditMode(active) { this.editMode = active; }
+  setSlide(progress) { const x = -SIGNAL_PANEL_WIDTH + SIGNAL_PANEL_WIDTH * Math.max(0, Math.min(1, progress)); this.panel.style.transform = `translateX(${x}px)`; }
+
+  render() {
+    const used = new Set(this.layoutSerializer.serialize().plots.map((p) => p.signal).filter(Boolean));
+    this.inUse.body.innerHTML = ''; this.available.body.innerHTML = '';
+    [...this.signals.values()].forEach((signal) => {
+      const node = this._buildSignalNode(signal, used.has(signal.id));
+      (used.has(signal.id) ? this.inUse.body : this.available.body).appendChild(node);
+    });
+  }
+
+  _buildSignalNode(signal, inUse) {
+    const node = document.createElement('div');
+    node.style.cssText = 'border:1px solid rgba(124,161,215,0.35);border-radius:8px;padding:8px;background:rgba(39,48,69,0.75);';
+    node.draggable = true;
+    node.addEventListener('dragstart', () => { this.dragSignal = signal; });
+    node.addEventListener('click', () => { document.dispatchEvent(new CustomEvent('signal-highlight', { detail: { signalId: signal.id } })); });
+    const icon = { gauge: '🧭', rate: '⏱️', text: '📰', event: '⚡', state: '🚦' }[signal.type] ?? '🔧';
+    const source = signal.source ?? 'unknown';
+    node.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px"><div>${icon} <strong>${signal.id}</strong><div style="opacity:.8">${signal.label ?? signal.id}</div></div><div style="text-align:right"><span style="background:#3f4f72;padding:2px 6px;border-radius:999px">${source}</span><div data-signal-id="${signal.id}" style="margin-top:6px;color:#bde5ff">${String(signal.value ?? '--')}</div></div></div>`;
+    if (signal.source === 'prometheus') { const details = document.createElement('details'); details.style.marginTop = '8px'; details.innerHTML = `<summary style="cursor:pointer">Source details</summary><div style="padding-top:6px;opacity:.9">PromQL: ${signal.metadata?.promql ?? '--'}<br>URL: ${signal.metadata?.prometheus_url ?? '--'}<br>Host: ${signal.metadata?.host_label ?? '--'}</div>`; node.appendChild(details); }
+    const remove = document.createElement('button');
+    remove.textContent = 'Remove source';
+    remove.style.cssText = 'margin-top:8px;border:0;background:#6f3c46;color:#fff;padding:4px 8px;border-radius:6px;cursor:pointer;';
+    remove.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await fetch(`/api/config/adapters/${encodeURIComponent(signal.id)}`, { method: 'DELETE' }); this.layoutSerializer.removeSignal(signal.id); this.signals.delete(signal.id); document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'remove-source' } })); this.render(); }
+      catch { this._showToast('Failed to remove source'); }
+    });
+    node.appendChild(remove);
+    if (inUse) node.style.boxShadow = '0 0 0 1px rgba(161,255,199,0.45) inset';
+    return node;
+  }
+
+  async _openAdapterFlow() {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;left:340px;top:80px;width:480px;max-width:calc(100vw - 360px);background:rgba(14,18,27,0.98);border:1px solid rgba(160,190,230,0.45);border-radius:10px;padding:14px;z-index:70;color:#fff;';
+    document.body.appendChild(overlay);
+    const state = { step: 1, adapter: null, config: {}, signal: { id: '', label: '' } };
+    let adapters = [];
+    try { adapters = await fetch('/api/adapters').then((r) => r.json()).then((r) => r.adapters ?? []); } catch { adapters = ['system', 'weather', 'rss_feed', 'http_poll', 'webhook', 'shell', 'file_watcher']; }
+
+    const renderStep = () => {
+      overlay.innerHTML = '<div style="font-weight:700;margin-bottom:8px">Add Source</div>';
+      if (state.step === 1) {
+        overlay.innerHTML += `<div>Step 1/4: choose adapter</div><select id="adapterSel" style="width:100%;margin-top:8px">${adapters.map((a) => `<option value="${a}">${a}</option>`).join('')}</select><button id="next" style="margin-top:10px">Next</button>`;
+        overlay.querySelector('#next').onclick = () => { state.adapter = overlay.querySelector('#adapterSel').value; state.step = 2; renderStep(); };
+      } else if (state.step === 2) {
+        const prom = state.adapter === 'prometheus';
+        overlay.innerHTML += `<div>Step 2/4: configure ${state.adapter}</div><input id="url" placeholder="URL" style="width:100%;margin-top:8px" />${prom ? '<textarea id="query" placeholder="PromQL" style="width:100%;margin-top:8px;height:90px"></textarea><button id="test">Test Query</button><div id="testOut" style="margin-top:6px"></div>' : ''}<button id="next" style="margin-top:10px">Next</button>`;
+        if (prom) { overlay.querySelector('#test').onclick = async () => { const out = overlay.querySelector('#testOut'); try { const res = await fetch('/api/prometheus/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: overlay.querySelector('#url').value, query: overlay.querySelector('#query').value }) }).then((r) => r.json()); out.textContent = res.ok ? `Value: ${res.value}` : `Error: ${res.error}`; } catch { out.textContent = 'Connection failed'; } }; }
+        overlay.querySelector('#next').onclick = () => { state.config.url = overlay.querySelector('#url')?.value; if (prom) state.config.query = overlay.querySelector('#query')?.value; state.step = 3; renderStep(); };
+      } else if (state.step === 3) {
+        overlay.innerHTML += `<div>Step 3/4: name signal</div><input id="id" placeholder="signal_id" style="width:100%;margin-top:8px"/><input id="label" placeholder="Signal label" style="width:100%;margin-top:8px"/><button id="next" style="margin-top:10px">Next</button>`;
+        overlay.querySelector('#next').onclick = () => { state.signal.id = overlay.querySelector('#id').value; state.signal.label = overlay.querySelector('#label').value; state.step = 4; renderStep(); };
+      } else {
+        overlay.innerHTML += `<div>Step 4/4: confirm</div><pre style="white-space:pre-wrap">${JSON.stringify({ adapter: state.adapter, ...state.config, ...state.signal }, null, 2)}</pre><button id="create">Create</button> <button id="cancel">Close</button>`;
+        overlay.querySelector('#create').onclick = async () => { const payload = { id: state.signal.id, label: state.signal.label, adapter: state.adapter, ...state.config }; try { const response = await fetch('/api/config/adapters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adapter_config: payload }) }); if (response.ok) { this.signals.set(payload.id, { id: payload.id, label: payload.label, value: '--', source: state.adapter, type: 'gauge', metadata: { promql: state.config.query, prometheus_url: state.config.url } }); this.render(); overlay.remove(); } } catch { this._showToast('Failed to create adapter'); } };
+        overlay.querySelector('#cancel').onclick = () => overlay.remove();
+      }
+    };
+    renderStep();
+  }
+}
+
+// ─── valve_panel.js ───────────────────────────────────────────────────────────
+
+class ValvePanel {
+  constructor(signalBus, layoutSerializer) {
+    this.signalBus = signalBus; this.layoutSerializer = layoutSerializer;
+    this.editMode = false; this.activePlotId = null;
+    this._buildDom(); this._bindEvents();
+  }
+
+  _buildDom() {
+    this.panel = document.createElement('div');
+    this.panel.style.cssText = 'position:fixed;display:none;z-index:68;background:rgba(17,22,33,0.98);border:1px solid rgba(145,178,220,0.5);border-radius:10px;color:#fff;padding:10px;min-width:240px;font:12px/1.35 system-ui,sans-serif;';
+    this.panel.innerHTML = '<div style="font-weight:700;margin-bottom:8px">Valve</div>';
+    this.rangeMin = this._addInput('Signal range min', 'number', '0');
+    this.rangeMax = this._addInput('Signal range max', 'number', '1');
+    this.threshold = this._addInput('Alert threshold (0.0–1.0)', 'number', '0.85', { min: '0', max: '1', step: '0.01' });
+    this.label = this._addInput('Label', 'text', '');
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = 200; this.canvas.height = 90;
+    this.canvas.style.cssText = 'width:100%;margin-top:8px;background:rgba(38,48,70,0.65);border-radius:6px;';
+    this.panel.appendChild(this.canvas);
+    const close = document.createElement('button');
+    close.textContent = 'Close';
+    close.style.cssText = 'margin-top:8px;border:0;background:#4d6791;color:#fff;padding:6px 10px;border-radius:6px;cursor:pointer;';
+    close.onclick = () => this.close(true);
+    this.panel.appendChild(close);
+    document.body.appendChild(this.panel);
+  }
+
+  _addInput(label, type, value, attrs = {}) {
+    const wrap = document.createElement('label'); wrap.style.cssText = 'display:block;margin:6px 0;'; wrap.textContent = label;
+    const input = document.createElement('input'); input.type = type; input.value = value; Object.assign(input, attrs);
+    input.style.cssText = 'display:block;width:100%;margin-top:4px;background:#243349;border:1px solid rgba(148,173,211,0.45);color:#fff;border-radius:6px;padding:5px;';
+    wrap.appendChild(input); this.panel.appendChild(wrap); return input;
+  }
+
+  _bindEvents() {
+    document.addEventListener('pipe-selected', (e) => { if (!this.editMode) return; this.open(e.detail); });
+    this.signalBus.subscribeAny(() => { if (this.activePlotId) this._drawGauge(); });
+  }
+
+  setEditMode(active) { this.editMode = active; if (!active) this.close(false); }
+
+  open({ plotId, x, y }) {
+    this.activePlotId = plotId;
+    const plot = this.layoutSerializer.ensurePlot(plotId);
+    const valve = plot.valve ?? { range_min: 0, range_max: 1, alert_threshold: 0.85, label: plot.signal ?? '' };
+    this.rangeMin.value = valve.range_min ?? 0; this.rangeMax.value = valve.range_max ?? 1;
+    this.threshold.value = valve.alert_threshold ?? 0.85; this.label.value = valve.label ?? plot.signal ?? '';
+    this.panel.style.left = `${Math.max(8, Math.min(x + 10, window.innerWidth - 260))}px`;
+    this.panel.style.top = `${Math.max(8, Math.min(y + 10, window.innerHeight - 340))}px`;
+    this.panel.style.display = 'block'; this._drawGauge();
+  }
+
+  close(save) {
+    if (save && this.activePlotId) {
+      this.layoutSerializer.setValve(this.activePlotId, { range_min: Number(this.rangeMin.value), range_max: Number(this.rangeMax.value), alert_threshold: Number(this.threshold.value), label: this.label.value });
+      document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'valve-save' } }));
+    }
+    this.activePlotId = null; this.panel.style.display = 'none';
+  }
+
+  _drawGauge() {
+    const ctx = this.canvas.getContext('2d');
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    const cx = 100, cy = 74, radius = 54;
+    const plot = this.layoutSerializer.ensurePlot(this.activePlotId);
+    const signal = this.signalBus.getSignal(plot.signal);
+    const min = Number(this.rangeMin.value), max = Number(this.rangeMax.value) || 1;
+    const value = Number(signal?.value ?? min);
+    const normalized = Math.max(0, Math.min((value - min) / Math.max(max - min, 1e-6), 1));
+    const threshold = Math.max(0, Math.min(Number(this.threshold.value), 1));
+    const start = Math.PI, end = Math.PI * 2;
+    ctx.lineWidth = 10; ctx.strokeStyle = '#334560';
+    ctx.beginPath(); ctx.arc(cx, cy, radius, start, end); ctx.stroke();
+    ctx.strokeStyle = '#7ad8a8';
+    ctx.beginPath(); ctx.arc(cx, cy, radius, start, start + (end - start) * normalized); ctx.stroke();
+    const marker = start + (end - start) * threshold;
+    ctx.strokeStyle = '#ff7f82'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(cx + Math.cos(marker) * (radius - 12), cy + Math.sin(marker) * (radius - 12)); ctx.lineTo(cx + Math.cos(marker) * (radius + 12), cy + Math.sin(marker) * (radius + 12)); ctx.stroke();
+  }
+}
+
+// ─── building_picker.js ───────────────────────────────────────────────────────
+
+class BuildingPicker {
+  constructor(app, world, cityScene, layoutSerializer, plotManager) {
+    this.app = app; this.world = world; this.cityScene = cityScene;
+    this.layoutSerializer = layoutSerializer; this.plotManager = plotManager;
+    this.editMode = false; this.moveFromPlot = null;
+    this._buildDom(); this._bindEvents();
+  }
+
+  _buildDom() {
+    this.panel = document.createElement('div');
+    this.panel.style.cssText = 'position:fixed;display:none;z-index:65;background:rgba(20,26,37,0.98);border:1px solid rgba(144,178,221,0.5);border-radius:10px;min-width:260px;max-width:320px;color:#fff;padding:10px;font:12px/1.4 system-ui,sans-serif;';
+    document.body.appendChild(this.panel);
+    this.menu = document.createElement('div');
+    this.menu.style.cssText = 'position:fixed;display:none;z-index:66;background:rgba(20,26,37,0.98);border:1px solid rgba(144,178,221,0.5);border-radius:10px;color:#fff;padding:8px;font:12px/1.4 system-ui,sans-serif;';
+    document.body.appendChild(this.menu);
+  }
+
+  _bindEvents() {
+    document.addEventListener('plot-selected', (event) => {
+      if (!this.editMode) return;
+      if (this.moveFromPlot) { this._attemptMove(event.detail.plotId, event.detail.plot); return; }
+      this.openForPlot(event.detail.plotId, event.detail.plot);
+    });
+    document.addEventListener('building-selected', (event) => { if (!this.editMode) return; this._openBuildingMenu(event.detail); });
+  }
+
+  setEditMode(active) { this.editMode = active; if (!active) { this.panel.style.display = 'none'; this.menu.style.display = 'none'; this.moveFromPlot = null; } }
+
+  openForPlot(plotId, plot) {
+    const layout = this.layoutSerializer.ensurePlot(plotId);
+    const portType = layout.signal ? (plot.layout?.port_type ?? plot.layout?.signal_type ?? 'gauge') : null;
+    const buildings = listBuildingTypes().filter((entry) => !portType || entry.portType === portType || (entry.portType === 'rate' && portType === 'gauge'));
+    this.panel.innerHTML = `<div style="font-weight:700;margin-bottom:6px">Building Picker</div>`;
+    buildings.forEach((entry) => {
+      const row = document.createElement('button');
+      row.style.cssText = 'width:100%;text-align:left;border:1px solid rgba(140,165,207,0.35);background:#263248;border-radius:8px;padding:8px;margin:4px 0;color:#fff;cursor:pointer;';
+      row.innerHTML = `<div><strong>${entry.label}</strong> <span style="opacity:.75">(${entry.portType})</span></div><div style="height:28px;background:#33455e;border-radius:4px;margin-top:6px;display:flex;align-items:center;justify-content:center">Animated preview</div>`;
+      row.onclick = () => {
+        const style = entry.styles?.[0] ?? 'default';
+        this.layoutSerializer.setBuilding(plotId, entry.id, style);
+        if (!layout.signal) plot.layout = { ...plot.layout, port_type: entry.portType };
+        document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'building-place' } }));
+        this.panel.style.display = 'none';
+        this._openStylePicker(plotId, entry.id, style, row.getBoundingClientRect());
+      };
+      this.panel.appendChild(row);
+    });
+    const screen = this._toScreen(plot.x, plot.y - 30);
+    this._positionWithin(this.panel, screen.x + 12, screen.y - 180);
+    this.panel.style.display = 'block';
+  }
+
+  _openStylePicker(plotId, buildingId, currentStyle, rect) {
+    const Type = getBuildingType(buildingId);
+    const styles = Type.styles ?? ['default'];
+    const picker = document.createElement('div');
+    picker.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(140,165,207,0.35)';
+    picker.innerHTML = '<div style="margin-bottom:6px">Pick style</div>';
+    styles.forEach((style) => {
+      const chip = document.createElement('button');
+      chip.textContent = style;
+      chip.style.cssText = `margin:2px;padding:4px 7px;border-radius:6px;border:1px solid rgba(170,200,240,.45);background:${style === currentStyle ? '#4f6a94' : '#2c3b54'};color:#fff;cursor:pointer;`;
+      chip.onclick = () => { this.layoutSerializer.setBuilding(plotId, buildingId, style); document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'style-change' } })); };
+      picker.appendChild(chip);
+    });
+    this.panel.appendChild(picker);
+    this.panel.style.display = 'block';
+    this._positionWithin(this.panel, rect.left, rect.top);
+  }
+
+  _openBuildingMenu({ plotId, x, y, buildingId }) {
+    this.menu.innerHTML = '';
+    const mk = (label, handler) => { const b = document.createElement('button'); b.textContent = label; b.style.cssText = 'display:block;width:100%;text-align:left;padding:7px;border:0;background:transparent;color:#fff;cursor:pointer;'; b.onclick = handler; this.menu.appendChild(b); };
+    mk('Remove building', () => { this.layoutSerializer.removeBuilding(plotId); document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'building-remove' } })); this.menu.style.display = 'none'; });
+    mk('Move building', () => { this.moveFromPlot = plotId; this._highlightCompatibleDropTargets(plotId, true); this.menu.style.display = 'none'; });
+    mk('Change style', () => { const rec = this.layoutSerializer.ensurePlot(plotId); this._openStylePicker(plotId, buildingId, rec.style, { left: x, top: y }); this.menu.style.display = 'none'; });
+    this._positionWithin(this.menu, x + 8, y + 8);
+    this.menu.style.display = 'block';
+  }
+
+  _highlightCompatibleDropTargets(fromPlotId, active) {
+    const from = this.layoutSerializer.ensurePlot(fromPlotId);
+    const type = getBuildingType(from.building).portType ?? 'gauge';
+    this.plotManager.entries().forEach((plot) => {
+      if (!active) { plot.node.alpha = 1; return; }
+      const target = this.layoutSerializer.ensurePlot(plot.id);
+      plot.node.alpha = (!target.signal || target.signal === from.signal || (plot.layout?.port_type ?? type) === type) ? 1 : 0.45;
+    });
+  }
+
+  _attemptMove(targetPlotId, targetPlot) {
+    const fromId = this.moveFromPlot;
+    if (!fromId || fromId === targetPlotId) return;
+    const source = this.layoutSerializer.ensurePlot(fromId);
+    const target = this.layoutSerializer.ensurePlot(targetPlotId);
+    const type = getBuildingType(source.building).portType ?? 'gauge';
+    const compatible = !target.signal || (targetPlot.layout?.port_type ?? type) === type;
+    if (!compatible) {
+      const x0 = targetPlot.node.x;
+      [x0-6, x0+6, x0-3, x0+3, x0].forEach((x, i) => window.setTimeout(() => { targetPlot.node.x = x; }, i * 45));
+      this.moveFromPlot = null; this._highlightCompatibleDropTargets(fromId, false); return;
+    }
+    this.layoutSerializer.moveBuilding(fromId, targetPlotId);
+    this.moveFromPlot = null;
+    this._highlightCompatibleDropTargets(fromId, false);
+    document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'building-move' } }));
+  }
+
+  _toScreen(x, y) { const scale = this.world.scale.x || 1; return { x: this.world.x + x * scale, y: this.world.y + y * scale }; }
+  _positionWithin(node, x, y) { node.style.display = 'block'; const rect = node.getBoundingClientRect(); node.style.left = `${Math.max(6, Math.min(x, window.innerWidth - rect.width - 6))}px`; node.style.top = `${Math.max(6, Math.min(y, window.innerHeight - rect.height - 6))}px`; }
+}
+
+// ─── edit_controller.js ───────────────────────────────────────────────────────
+
+class EditController {
+  constructor({ cityScene, signalLibrary, buildingPicker, valvePanel, layoutSerializer, pipeRenderer, world, signalBus }) {
+    this.cityScene = cityScene; this.signalLibrary = signalLibrary; this.buildingPicker = buildingPicker;
+    this.valvePanel = valvePanel; this.layoutSerializer = layoutSerializer; this.pipeRenderer = pipeRenderer;
+    this.world = world; this.signalBus = signalBus; this.mode = 'display'; this.transition = null; this.targetMode = null;
+    this._buildUi();
+  }
+
+  get isEditMode() { return this.mode === 'edit'; }
+
+  _buildUi() {
+    this.button = document.createElement('button');
+    this.button.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:80;border:0;border-radius:999px;background:#2f405f;color:#fff;font:700 15px system-ui,sans-serif;padding:10px 14px;cursor:pointer;';
+    this._setButtonLabel();
+    this.button.onclick = () => { if (this.transition) { this._snapToTarget(); return; } if (this.isEditMode) this.exitEditMode(); else this.enterEditMode(); };
+    document.body.appendChild(this.button);
+    this.cityWrap = document.getElementById('app');
+    this.pipeLayer = document.createElement('div');
+    this.pipeLayer.style.cssText = 'position:fixed;left:0;right:0;bottom:0;height:220px;transform:translateY(220px);background:linear-gradient(0deg,rgba(31,38,55,.95),rgba(31,38,55,.55));pointer-events:none;z-index:30;';
+    document.body.appendChild(this.pipeLayer);
+    this.sourceNodes = document.createElement('div');
+    this.sourceNodes.style.cssText = 'position:fixed;left:340px;right:20px;bottom:10px;height:90px;display:flex;gap:10px;transform:translateY(120px);opacity:0;z-index:42;pointer-events:none;';
+    this.sourceNodes.innerHTML = '<div style="padding:8px 10px;background:#27364f;border-radius:8px;color:#fff">Sources</div>';
+    document.body.appendChild(this.sourceNodes);
+    this.toast = document.createElement('div');
+    this.toast.style.cssText = 'position:fixed;right:18px;bottom:64px;z-index:90;background:rgba(29,34,48,.95);color:#fff;border-radius:8px;padding:8px 10px;display:none;';
+    document.body.appendChild(this.toast);
+  }
+
+  _setButtonLabel() { this.button.textContent = this.isEditMode ? 'Done ✓' : '⚙'; }
+  _showToast(message) { this.toast.textContent = message; this.toast.style.background = 'rgba(29,34,48,.95)'; this.toast.style.display = 'block'; window.clearTimeout(this.toastTimer); this.toastTimer = window.setTimeout(() => { this.toast.style.display = 'none'; }, 2200); }
+  showSaveFailedToast() { this._showToast('Layout save failed — changes may not persist.'); }
+  showSavedToast() { this.toast.textContent = '✓ Saved'; this.toast.style.background = 'rgba(42,106,68,.95)'; this.toast.style.display = 'block'; window.clearTimeout(this.toastTimer); this.toastTimer = window.setTimeout(() => { this.toast.style.display = 'none'; }, 2000); }
+
+  _setComponentEditState() {
+    const e = this.mode === 'edit';
+    this.cityScene.setAnimationPaused(e); this.cityScene.plotManager.setEditMode(e);
+    this.signalLibrary.setEditMode(e); this.buildingPicker.setEditMode(e);
+    this.valvePanel.setEditMode(e); this.pipeRenderer.setEditMode(e);
+  }
+
+  _snapToTarget() {
+    if (!this.transition) return;
+    window.cancelAnimationFrame(this.transition.raf);
+    this._applyProgress(1, this.targetMode); this.mode = this.targetMode; this.transition = null;
+    this._setButtonLabel(); this._setComponentEditState();
+  }
+
+  _applyProgress(progress, direction) {
+    const entering = direction === 'edit'; const p = entering ? progress : 1 - progress;
+    const ease = 0.5 - Math.cos(Math.PI * p) / 2;
+    const cityY = -48 * ease; const dim = 1 - ease * 0.4;
+    this.world.y = this.world.baseY + cityY; this.cityScene.setSkyBrightness(dim);
+    const pipeP = Math.max(0, Math.min((p - (entering ? 0.18 : 0)) / ((entering ? 0.62 : 0.45) - (entering ? 0.18 : 0)), 1));
+    this.pipeLayer.style.transform = `translateY(${220 - 220 * pipeP}px)`;
+    const srcP = Math.max(0, Math.min((p - (entering ? 0.24 : 0.06)) / ((entering ? 0.72 : 0.5) - (entering ? 0.24 : 0.06)), 1));
+    this.sourceNodes.style.transform = `translateY(${120 - 120 * srcP}px)`; this.sourceNodes.style.opacity = `${srcP}`;
+    const plotP = Math.max(0, Math.min((p - (entering ? 0.36 : 0.0)) / ((entering ? 0.78 : 0.42) - (entering ? 0.36 : 0.0)), 1));
+    this.cityScene.plotManager.setHighlightProgress(plotP);
+    const panelP = Math.max(0, Math.min((p - (entering ? 0.42 : 0)) / ((entering ? 0.92 : 0.5) - (entering ? 0.42 : 0)), 1));
+    this.signalLibrary.setSlide(panelP);
+  }
+
+  _animateTo(targetMode) {
+    this.targetMode = targetMode; const t0 = performance.now(); const duration = 600;
+    const tick = (now) => {
+      const progress = Math.max(0, Math.min((now - t0) / duration, 1));
+      this._applyProgress(progress, targetMode);
+      if (progress >= 1) { this.mode = targetMode; this.transition = null; this._setButtonLabel(); this._setComponentEditState(); return; }
+      this.transition.raf = window.requestAnimationFrame(tick);
+    };
+    this.transition = { raf: window.requestAnimationFrame(tick) };
+  }
+
+  enterEditMode() { if (this.mode === 'edit') return; this._animateTo('edit'); }
+
+  async exitEditMode() {
+    if (this.mode !== 'edit') return;
+    try { await this.layoutSerializer.save(); } catch { this.showSaveFailedToast(); }
+    this._animateTo('display');
+  }
+}
+
+// ─── main.js — bootstrap ──────────────────────────────────────────────────────
+
+const appHost = document.getElementById('app');
+const app = new PIXI.Application({ resizeTo: window, backgroundColor: 0x1a1a2e, antialias: true, autoDensity: true });
+appHost.appendChild(app.view);
+
+const hud = document.createElement('div');
+hud.id = 'mode-hud';
+Object.assign(hud.style, { position: 'fixed', top: '12px', right: '14px', fontFamily: 'system-ui, sans-serif', fontWeight: '700', letterSpacing: '0.4px', zIndex: '15' });
+document.body.appendChild(hud);
+
+const tooltip = document.createElement('div');
+Object.assign(tooltip.style, { position: 'fixed', display: 'none', background: 'rgba(18,22,34,0.92)', border: '1px solid rgba(172,196,236,0.45)', color: '#eaf3ff', padding: '6px 8px', borderRadius: '6px', font: '12px/1.35 system-ui, sans-serif', zIndex: '20', pointerEvents: 'none' });
+document.body.appendChild(tooltip);
+
+const signalBus = new SignalBus();
+signalBus.onModeChange((mode) => {
+  if (mode === 'live') { hud.textContent = '● LIVE'; hud.style.color = '#5aaeff'; }
+  else { hud.textContent = '● DEMO'; hud.style.color = '#f2a641'; }
+});
+signalBus.start();
+
+const world = new PIXI.Container();
+world.eventMode = 'none';
+world.baseY = 0;
+app.stage.addChild(world);
+
+const cityScene = new CityScene(app, world, signalBus, tooltip);
+await cityScene.init();
+
+const pipeRenderer = new PipeRenderer({ signalBus, plotManager: cityScene.plotManager, world });
+const layoutSerializer = new LayoutSerializer({ initialLayout: signalBus.getLayout(), plotManager: cityScene.plotManager, pipeRenderer });
+const signalLibrary = new SignalLibrary(signalBus, layoutSerializer);
+const buildingPicker = new BuildingPicker(app, world, cityScene, layoutSerializer, cityScene.plotManager);
+const valvePanel = new ValvePanel(signalBus, layoutSerializer);
+const editController = new EditController({ cityScene, signalLibrary, buildingPicker, valvePanel, layoutSerializer, pipeRenderer, world, signalBus });
+
+const REF_W = 1920, REF_H = 1080;
+let resizeTimer = null;
+
+function fitScene() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const scale = Math.min(w / REF_W, h / REF_H);
+  const cityOffsetY = world.y - world.baseY;
+  const centeredY = Math.floor((h - REF_H * scale) * 0.5);
+  world.scale.set(scale);
+  world.x = Math.floor((w - REF_W * scale) * 0.5);
+  world.baseY = centeredY;
+  world.y = centeredY + cityOffsetY;
+}
+
+document.addEventListener('layout-updated', () => {
+  const layout = layoutSerializer.serializeAll();
+  cityScene.applyLayout(layout.plots);
+  pipeRenderer.syncFromLayout(layout.plots);
+  signalLibrary.render();
+});
+
+document.addEventListener('pipe-menu', (event) => {
+  const { plotId, x, y } = event.detail;
+  const menu = document.createElement('div');
+  menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:67;background:rgba(18,23,35,.97);border:1px solid rgba(140,165,207,.4);border-radius:8px;padding:6px;`;
+  menu.innerHTML = '<button id="cfg">Configure</button><button id="rm">Remove pipe</button>';
+  document.body.appendChild(menu);
+  menu.querySelector('#cfg').onclick = () => { document.dispatchEvent(new CustomEvent('pipe-selected', { detail: { plotId, x, y } })); menu.remove(); };
+  menu.querySelector('#rm').onclick = () => { layoutSerializer.removePipe(plotId); const layout = layoutSerializer.serializeAll(); cityScene.applyLayout(layout.plots); pipeRenderer.syncFromLayout(layout.plots); signalLibrary.render(); menu.remove(); };
+  window.setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+});
+
+document.addEventListener('plot-selected', (event) => {
+  if (!editController.isEditMode) return;
+  const plot = layoutSerializer.ensurePlot(event.detail.plotId);
+  if (plot.signal && !plot.building) {
+    const scale = world.scale.x || 1;
+    document.dispatchEvent(new CustomEvent('pipe-menu', { detail: { plotId: event.detail.plotId, x: world.x + event.detail.plot.x * scale, y: world.y + event.detail.plot.y * scale } }));
+  }
+});
+
+fitScene();
+window.addEventListener('resize', () => {
+  if (resizeTimer) window.clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(fitScene, 150);
+});
+
+signalBus.onLayoutChange((layout) => {
+  if (editController.isEditMode) return;
+  layoutSerializer.load(layout);
+  cityScene.applyLayout(layoutSerializer.serializeAll().plots);
+  signalLibrary.render();
+});
+
+signalBus.onLayoutSaveStatus((status) => {
+  if (status.ok) editController.showSavedToast();
+  else editController.showSaveFailedToast();
+});
+
+app.ticker.add((delta) => { cityScene.update(delta); });
+
+    </script>
+  </body>
+</html>
