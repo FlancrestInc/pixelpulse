@@ -84,6 +84,10 @@ export class SignalLibrary {
       if (current.building) this.layoutSerializer.setValve(plot.id, defaultValve);
       document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'signal-drop' } }));
       this.dragSignal = null;
+      if (this.statusBar) {
+        this.statusBar.textContent = 'Click a signal to select it, then click a plot on the city.';
+        this.statusBar.style.color = '#8ab4d4';
+      }
     });
   }
 
@@ -115,6 +119,22 @@ export class SignalLibrary {
     this.panel.style.transform = `translateX(${x}px)`;
   }
 
+  _selectSignal(signal) {
+    if (this.dragSignal && this.dragSignal.id === signal.id) {
+      // Clicking the same signal again deselects it
+      this.dragSignal = null;
+      this.statusBar.textContent = 'Click a signal to select it, then click a plot on the city.';
+      this.statusBar.style.color = '#8ab4d4';
+      this.render();
+      return;
+    }
+    this.dragSignal = signal;
+    this.statusBar.innerHTML = `<span style="color:#a8f0c6">✓ Selected: <strong>${signal.id}</strong></span><br>Now click a plot slot on the city street.`;
+    this.statusBar.style.color = '#a8f0c6';
+    document.dispatchEvent(new CustomEvent('signal-highlight', { detail: { signalId: signal.id } }));
+    this.render();
+  }
+
   render() {
     const used = new Set(this.layoutSerializer.serialize().plots.map((plot) => plot.signal).filter(Boolean));
     this.inUse.body.innerHTML = '';
@@ -129,9 +149,13 @@ export class SignalLibrary {
     const node = document.createElement('div');
     node.style.cssText = 'border:1px solid rgba(124,161,215,0.35);border-radius:8px;padding:8px;background:rgba(39,48,69,0.75);';
     node.draggable = true;
-    node.addEventListener('dragstart', () => { this.dragSignal = signal; });
+    node.addEventListener('dragstart', () => { this._selectSignal(signal); });
     node.addEventListener('click', () => {
-      document.dispatchEvent(new CustomEvent('signal-highlight', { detail: { signalId: signal.id } }));
+      if (this.editMode) {
+        this._selectSignal(signal);
+      } else {
+        document.dispatchEvent(new CustomEvent('signal-highlight', { detail: { signalId: signal.id } }));
+      }
     });
 
     const icon = this._icon(signal.type);
@@ -163,6 +187,10 @@ export class SignalLibrary {
     node.appendChild(remove);
 
     if (inUse) node.style.boxShadow = '0 0 0 1px rgba(161,255,199,0.45) inset';
+    if (this.dragSignal && this.dragSignal.id === signal.id) {
+      node.style.boxShadow = '0 0 0 2px rgba(100,220,180,0.9) inset';
+      node.style.background = 'rgba(39,80,69,0.9)';
+    }
     return node;
   }
 

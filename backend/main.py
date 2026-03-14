@@ -6,9 +6,9 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
 
 from backend.adapters.builtin.webhook import WebhookAdapter
 from backend.config_api import router as config_api_router, set_layout_event_publisher
@@ -37,10 +37,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PixelPulse", lifespan=lifespan)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Response
 
-if FRONTEND_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend_static")
-
+@app.middleware("http")
+async def no_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 app.include_router(config_api_router)
 
 
@@ -49,8 +53,28 @@ async def index() -> FileResponse:
     """Serve the frontend entrypoint when available."""
     index_path = FRONTEND_DIR / "index.html"
     if index_path.exists():
-        return FileResponse(index_path)
-    return FileResponse(BASE_DIR / "pixelpulse_standalone.html")
+        return FileResponse(str(index_path))
+    return FileResponse(str(BASE_DIR / "pixelpulse_standalone.html"))
+
+
+@app.get("/{file_path:path}")
+async def serve_static(file_path: str) -> FileResponse:
+    """Serve frontend JS modules and project assets at their original relative paths.
+
+    Checks frontend/ first (main.js, scene/*, edit_mode/*, etc.), then falls
+    back to the project root for assets/sprites/ and similar shared resources.
+    """
+    # Resolve against frontend directory first
+    candidate = (FRONTEND_DIR / file_path).resolve()
+    if candidate.is_file() and candidate.is_relative_to(FRONTEND_DIR):
+        return FileResponse(str(candidate))
+
+    # Fall back to project root (assets/, plugins/, etc.)
+    asset_candidate = (BASE_DIR / file_path).resolve()
+    if asset_candidate.is_file() and asset_candidate.is_relative_to(BASE_DIR):
+        return FileResponse(str(asset_candidate))
+
+    return JSONResponse({"detail": "Not found"}, status_code=404)
 
 
 @app.websocket("/ws")
@@ -73,3 +97,7 @@ async def webhook_ingest(hook_path: str, request: Request) -> dict[str, str]:
         payload if isinstance(payload, dict) else {"value": payload},
     )
     return {"status": "accepted" if routed else "ignored"}
+
+
+if __name__ == "__main__":
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

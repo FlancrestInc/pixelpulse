@@ -12,7 +12,7 @@ export class PlotManager {
       const container = new PIXI.Container();
       container.x = plot.x;
       container.y = plot.y;
-      container.eventMode = 'none';
+      container.eventMode = 'passive';
 
       const pad = new PIXI.Graphics();
       const overlay = new PIXI.Graphics();

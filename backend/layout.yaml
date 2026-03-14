@@ -1,0 +1,12 @@
+display:
+  plots_per_row: 6
+plots:
+- plot_id: main_1
+- plot_id: main_2
+- plot_id: main_3
+- plot_id: main_4
+- plot_id: main_5
+- plot_id: main_6
+- plot_id: mid_1
+- plot_id: mid_2
+- plot_id: mid_3

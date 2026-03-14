@@ -57,7 +57,7 @@ signalBus.onModeChange((mode) => {
 signalBus.start();
 
 const world = new PIXI.Container();
-world.eventMode = 'none';
+world.eventMode = 'passive';
 world.baseY = 0;
 app.stage.addChild(world);
 

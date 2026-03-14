@@ -6,3 +6,4 @@ config.yaml
 plugins/*
 !plugins/builtin/
 !plugins/builtin/**
+favicon.ico
