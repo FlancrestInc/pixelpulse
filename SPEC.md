@@ -2,7 +2,7 @@
 ## Animated System Monitoring Dashboard
 
 **Project Specification & Architecture Guide**  
-Version 3.2 — March 2026
+Version 3.4 — March 2026
 
 ---
 
@@ -892,7 +892,7 @@ The GUI and config files are always in sync:
 |---|---|
 | Raspberry Pi 4 (2GB+) | Primary hosting target. |
 | Chromium (kiosk mode) | Displays the dashboard full-screen. |
-| systemd service | Auto-starts on boot, restarts on crash. *(Planned — Phase 6b)* |
+| systemd service | Auto-starts on boot, restarts on crash. *(Planned — Phase 8c)* |
 | GitHub | Version control. |
 | Code Server | VS Code in the browser, for development on the Pi. |
 
@@ -935,6 +935,7 @@ pixelpulse/
 │   ├── index.html
 │   ├── main.js                  # App bootstrap, WebSocket init, mode management
 │   ├── signal_bus.js            # WS connection, signal distribution
+│   ├── ui_utils.js              # Shared UI utilities: drag, toast, menus, positioning
 │   ├── edit_mode/
 │   │   ├── edit_controller.js   # Mode switch logic and animation
 │   │   ├── signal_library.js    # Signal Library panel
@@ -994,7 +995,7 @@ pixelpulse/
 
 ### 8.2 Key File Responsibilities
 
-**`backend/main.py`** — Entry point. Instantiates FastAPI, mounts frontend static files, registers WebSocket route, webhook routes, and the config REST API routes. Initialises the signal engine on startup.
+**`backend/main.py`** — Entry point. Instantiates FastAPI, registers all routes, serves frontend files via catch-all path handler. Run with `python3 -m backend.main` from the project root, or via uvicorn directly. Includes `if __name__ == "__main__"` block for direct execution.
 
 **`backend/signal_engine.py`** — Core backend coordinator. Delegates adapter loading to `plugin_loader`, schedules polling with exponential backoff, maintains current signal state, maintains rolling history buffer (10 min), broadcasts to WebSocket clients, and sends full state + history snapshot on new connection.
 
@@ -1557,7 +1558,7 @@ The engine will log a clear warning with the install command if the package is m
 
 ---
 
-### Phase 5c — Plugin Architecture & Prometheus Adapter *(Next — parallel with Phase 6)*
+### Phase 5c — Plugin Architecture & Prometheus Adapter ✅
 
 **Goal:** Refactor the adapter system into a drop-in plugin model and ship the Prometheus adapter as the first first-party plugin.
 
@@ -1578,26 +1579,73 @@ The engine will log a clear warning with the install command if the package is m
 
 ---
 
-### Phase 6 — Edit Mode & Three-Tier UI *(Planned)*
+### Phase 6 — Edit Mode & Three-Tier UI ✅
 
 **Goal:** The city is configurable through a graphical interface. The three-tier architecture is fully interactive.
 
-**Deliverables:**
-- Mode switch animation: city lifts, pipe layer slides up, edit panels appear
-- Plot states: empty / zoned / active, with correct visual for each
-- Signal Library panel: lists connected and available signals with live values
-- Adapter configuration flow: step-by-step source addition with live preview
-- Building Picker: animated previews, filtered by port type compatibility
-- Style Picker: inline style selection per building
-- Pipe renderer: visual pipe network over the canvas
-- Valve panel: range, alert threshold, label configuration with live preview
-- Edit handles: move, replace, remove buildings and pipes
-- Port type icons on buildings and zoned plots
-- Incompatible connection rejection (shake animation + tooltip)
-- Layout serialization: edit mode exit writes `layout.yaml` via REST API
-- Config API: backend endpoints for read/write of both config files
-- Starter city: auto-generated on first launch from `layout.default.yaml`
-- Bidirectional config: hand-edited files reflected on page reload
+**Delivered:**
+- Mode switch animation: city lifts (48px), pipe layer slides up from bottom, Signal Library slides in from left — 600ms ease-in-out timeline
+- Plot states: empty / zoned / active, with distinct visual for each; highlight progress animation on edit mode enter
+- Signal Library panel: lists signals by in-use / available, live value updates, drag-to-select or click-to-select flow
+- Signal compatibility mode: when connecting from building menu, compatible signals are highlighted in amber, incompatible signals dim and show "not compatible" on click
+- Adapter configuration flow: 4-step wizard (adapter type → config → name → confirm) with Prometheus PromQL test-query
+- Building Picker: filtered by port type compatibility; style picker inline below selected building
+- Style Picker: chip UI showing all style variants for the selected building type
+- Pipe renderer: animated orthogonal pipe routes over canvas overlay, pulse-dot animation on live pipes, valve ⚙ button on hover
+- Valve panel: range min/max, alert threshold, label; live semicircle gauge preview with threshold marker; draggable
+- Building context menu: Connect signal / Change signal / Disconnect signal / Change style / Move building / Remove building
+- Move building: click-to-move flow with compatible-plot highlighting
+- Incompatible connection rejection: shake animation + toast notification
+- Port type icons on zoned plots
+- Layout serialization: edit mode exit writes `layout.yaml` via `PUT /api/layout`
+- Config API: full REST endpoints for read/write of `config.yaml` and `layout.yaml`; live adapter add/remove
+- Starter city: auto-generated from `layout.default.yaml` on first launch
+- Bidirectional config: hand-edited files reflected on page reload via WebSocket handshake
+- Source nodes panel: slides up from bottom in edit mode showing all active signal chips
+- `ui_utils.js`: shared UI utility module — `showToast`, `makeDraggable`, `positionWithin`, `dismissOnOutsideClick`, `makePanel`, `makeMenu`, `makeMenuButton`, `makeMenuDivider`
+- All panels draggable; all context menus dismiss on outside click (80ms delay, canvas-click immune)
+
+---
+
+### Phase 6b — Building Implementations & Vehicle Traffic ✅
+
+**Goal:** Replace placeholder building graphics with fully animated, signal-driven implementations.
+
+**Delivered:**
+- **Server Tower** — rack body with 15 LED windows blinking at load-proportional rate; colour-coded load bar (green→amber→red) at base. Three styles: `rack_classic`, `blade_modern`, `mini_tower`.
+- **Warehouse** — shutter door opens proportionally to disk fill value; side fill indicator bar with colour coding. Three styles.
+- **Power Station** — two striped chimneys with particle smoke system; spawn rate and particle speed scale with CPU load. Three styles.
+- **Bank Ticker** — scrolling ticker tape on building facade driven by any text signal (RSS headlines, weather). Three styles.
+- **Café** — awning, large window, neon sign that flickers based on request rate. Three styles.
+- **Drive-In Theater** — animated screen (on when streams > 0); up to 6 parked cars appear/disappear proportionally to stream count. Three styles.
+- **Data Vault** — delivery truck drives in from left on any event signal, parks at loading dock, drives away after ~4 seconds. Three styles.
+- **Vehicle traffic system** (`vehicles.js`) — cars and trucks on both roads; density and speed driven by `net_bytes_recv` signal; spawns up to 24 vehicles at peak; directional (road1 left→right, road2 right→left by default).
+- **Windmill blade pivot fix** — blades container positioned at hub y=-116 so rotation pivots correctly around the hub centre.
+- All buildings implement the standard four animation states: `idle`, `active`, `alert` (red sinusoidal pulse), `disconnected` (⚡ icon).
+
+**Still placeholder (Phase 8a):** `auth_gate`, `construction_yard`, `swimming_pool`, `billboard`, `city_park`, `dockyard`.
+
+---
+
+### Phase 6c — Bug Fixes & UI Polish ✅
+
+**Goal:** Resolve interaction bugs discovered during first live deployment; polish the edit mode UI for everyday use.
+
+**Delivered:**
+- **Backend entrypoint fixed** — `backend/main.py` now includes `if __name__ == "__main__": uvicorn.run(...)` so the server starts with `python3 backend/main.py` as expected, without requiring an explicit uvicorn invocation.
+- **Frontend static file serving fixed** — replaced the broken `/static` `StaticFiles` mount with a `/{file_path:path}` catch-all route that resolves JS modules and assets relative to the `frontend/` directory (and falls back to the project root for `assets/sprites/` etc.), preventing the `main.js 404` on initial load.
+- **No-cache middleware** — `Cache-Control: no-store` header added via FastAPI middleware to prevent browsers from serving stale JS during development.
+- **Pixi event propagation fixed** — `world.eventMode` was set to `'none'`, silently blocking all pointer events from reaching plot slots and buildings. Changed to `'passive'`; plot node containers also initialised as `'passive'` instead of `'none'`.
+- **Pipe renderer click-through fixed** — the full-screen pipe canvas was setting `pointer-events: auto` in edit mode, eating all clicks before they reached Pixi. Changed to `pointer-events: none` permanently; hit-testing now runs on `window` mousemove/click listeners instead.
+- **Building picker placeholders removed** — `listBuildingTypes()` now filters out any type still backed by `PlaceholderBuilding`, so only fully-implemented buildings appear in the picker.
+- **Style picker duplication fixed** — style picker div was appended to the panel each time without clearing the previous one; fixed with a `.style-picker` class check.
+- **Windmill blade pivot fixed** — blades container was positioned at `(0,0)` causing rotation to orbit the tower base; fixed by setting `this.blades.y = -116` to pivot at the hub centre.
+- **Building context menu multi-click fixed** — `dismissOnOutsideClick` with `delay=0` was firing on the same click that opened the menu (Pixi `pointertap` → DOM `click` race). Default delay raised to `80ms`; canvas-origin clicks explicitly ignored in the dismiss handler.
+- **`ui_utils.js` extracted** — all shared UI patterns (drag, toast, positioning, click-away, panel/menu factories) consolidated into a single module imported by all edit mode components, replacing four separate ad-hoc implementations.
+- **Valve panel redesigned** — cleaner layout with a proper drag-handle title bar; semicircle gauge resized to use full panel width; percentage readout added to gauge centre; input fields have live preview on change.
+- **Signal library UX improved** — cleaner card design; selected signal highlighted with green border; status bar shows clear instruction text; `_pendingPortType` tracks the required signal type when connecting from a building menu.
+- **Signal compatibility highlighting** — when "Connect signal" is chosen from a building's context menu, the signal library panel border highlights amber, the status bar turns amber with the required port type, compatible signal cards are highlighted with amber border and `✓ compatible` badge, incompatible cards dim to 40% opacity with `not-allowed` cursor and show a toast explaining the mismatch on click.
+- **Performance tuning** — Pixi application: antialiasing disabled, device pixel ratio capped at 1.5×, `powerPreference: 'high-performance'` set.
 
 ---
 
