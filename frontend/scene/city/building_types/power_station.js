@@ -83,8 +83,9 @@ export class PowerStation {
     const now = performance.now();
 
     // Spawn smoke particles based on load
-    const spawnInterval = Math.max(80, 600 - this.value * 500);
-    if (this.value > 0.05 && now - this._lastSmoke > spawnInterval) {
+    const effectiveValue = this.state === 'idle' ? Math.max(this.value, 0.12) : this.value;
+    const spawnInterval = Math.max(120, 760 - effectiveValue * 560);
+    if (this.state !== 'disconnected' && effectiveValue > 0.05 && now - this._lastSmoke > spawnInterval) {
       this._lastSmoke = now;
       // Spawn from each chimney top
       [{ x: -29, y: -202 }, { x: 29, y: -177 }].forEach(origin => {
@@ -96,7 +97,7 @@ export class PowerStation {
         p.endFill();
         p.x = origin.x + (Math.random() - 0.5) * 6;
         p.y = origin.y;
-        p._vy = -(0.4 + Math.random() * 0.5) * (0.5 + this.value);
+        p._vy = -(0.35 + Math.random() * 0.45) * (0.45 + effectiveValue);
         p._vx = (Math.random() - 0.5) * 0.3;
         p._life = 1.0;
         p._decay = 0.008 + Math.random() * 0.006;
@@ -123,6 +124,8 @@ export class PowerStation {
     this.alertOverlay.alpha = 0.15 + pulse * 0.55;
     this.alertOverlay.visible = this.state === 'alert';
     this.disconnectIcon.visible = this.state === 'disconnected';
+    if (this.state === 'disconnected') this.smokeContainer.alpha = 0.2;
+    else this.smokeContainer.alpha = 0.9;
   }
 
   setAnimationState(state) { this.state = state; }

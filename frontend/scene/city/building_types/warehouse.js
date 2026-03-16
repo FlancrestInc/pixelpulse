@@ -113,6 +113,14 @@ export class Warehouse {
   }
 
   update() {
+    if (this.state === 'idle') {
+      this.fillIndicator.alpha = 0.88 + Math.sin(performance.now() * 0.0016) * 0.06;
+    } else if (this.state === 'disconnected') {
+      this.fillIndicator.alpha = 0.35;
+    } else {
+      this.fillIndicator.alpha = 1;
+    }
+
     const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);
     this.alertOverlay.alpha = 0.15 + pulse * 0.55;
     this.alertOverlay.visible = this.state === 'alert';

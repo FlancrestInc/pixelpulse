@@ -101,9 +101,9 @@ export class Cafe {
       // Flicker based on activity
       const t = performance.now() / 1000;
       const flicker = this.state === 'idle'
-        ? 0.4
+        ? 0.58 + Math.sin(t * 1.8) * 0.04
         : 0.7 + Math.sin(t * 4.5) * 0.08 + Math.sin(t * 11.3) * 0.04;
-      this.neonSign.alpha = flicker;
+      this.neonSign.alpha = this.state === 'disconnected' ? 0.2 : flicker;
     }
 
     const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);
