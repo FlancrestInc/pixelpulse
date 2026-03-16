@@ -98,6 +98,7 @@ def test_put_layout_rejects_unknown_plot_id(monkeypatch, tmp_path: Path):
     response = client.put("/api/layout", json=payload)
 
     assert response.status_code == 400
+    assert response.json()["detail"]["message"] == "Layout validation failed"
     assert response.json()["detail"]["errors"][0]["code"] == "unknown_plot_id"
     assert not layout_path.exists()
 
@@ -189,6 +190,42 @@ def test_put_layout_rejects_invalid_valve_range(monkeypatch, tmp_path: Path):
 
     assert response.status_code == 400
     assert response.json()["detail"]["errors"][0]["code"] == "invalid_valve_range"
+    assert not layout_path.exists()
+
+
+def test_put_layout_rejects_valve_without_signal(monkeypatch, tmp_path: Path):
+    layout_path = tmp_path / "layout.yaml"
+    config_path = tmp_path / "config.yaml"
+    _write_example_config(config_path)
+    monkeypatch.setattr(config_api, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(config_api, "LAYOUT_PATH", layout_path)
+
+    client = TestClient(app)
+    payload = _valid_layout_payload()
+    payload["layout"]["plots"][0].pop("signal")
+
+    response = client.put("/api/layout", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["errors"][0]["code"] == "valve_requires_signal"
+    assert not layout_path.exists()
+
+
+def test_put_layout_rejects_alert_threshold_outside_range(monkeypatch, tmp_path: Path):
+    layout_path = tmp_path / "layout.yaml"
+    config_path = tmp_path / "config.yaml"
+    _write_example_config(config_path)
+    monkeypatch.setattr(config_api, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(config_api, "LAYOUT_PATH", layout_path)
+
+    client = TestClient(app)
+    payload = _valid_layout_payload()
+    payload["layout"]["plots"][0]["valve"]["alert_threshold"] = 4
+
+    response = client.put("/api/layout", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["errors"][0]["code"] == "invalid_alert_threshold"
     assert not layout_path.exists()
 
 

@@ -39,6 +39,17 @@
 - Press `Done ✓` and confirm the save toast appears.
 - Reload the page and confirm the layout change persisted.
 
+## Invalid Save Guardrail
+
+- With the backend running, submit an invalid `PUT /api/layout` payload using DevTools or `curl`:
+  - unknown `plot_id`, or
+  - unknown `building`, or
+  - `valve` without a `signal`
+- Confirm the response is `400` with a structured `detail.errors` payload.
+- Confirm [backend/layout.yaml](/mnt/Barnabas/data2/projects/pixelpulse/.worktrees/layout-save-validation/backend/layout.yaml) remains unchanged after the rejected save.
+- If triggered from the UI, confirm the toast shows a specific validation reason instead of a generic failure message.
+- Confirm edit mode still exits cleanly and the city remains on the last good saved layout.
+
 ## Degraded / Offline Behavior
 
 - Disconnect a signal source or let demo mode resume.
