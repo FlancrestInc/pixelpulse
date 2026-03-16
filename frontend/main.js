@@ -1,99 +1,111 @@
-import { EditController } from './edit_mode/edit_controller.js';
+import { EditController }   from './edit_mode/edit_controller.js';
 import { makeMenu, makeMenuButton, positionWithin, dismissOnOutsideClick } from './ui_utils.js';
-import { BuildingPicker } from './edit_mode/building_picker.js';
+import { BuildingPicker }   from './edit_mode/building_picker.js';
 import { LayoutSerializer } from './edit_mode/layout_serializer.js';
-import { PipeRenderer } from './edit_mode/pipe_renderer.js';
-import { SignalLibrary } from './edit_mode/signal_library.js';
-import { ValvePanel } from './edit_mode/valve_panel.js';
-import { SignalBus } from './signal_bus.js';
+import { PipeRenderer }     from './edit_mode/pipe_renderer.js';
+import { SignalLibrary }    from './edit_mode/signal_library.js';
+import { ValvePanel }       from './edit_mode/valve_panel.js';
+import { SignalBus }        from './signal_bus.js';
 import { CityScene, REF_HEIGHT, REF_WIDTH } from './scene/city/city_scene.js';
+
+// ─── Pixi app ─────────────────────────────────────────────────────────────────
 
 const appHost = document.getElementById('app');
 const app = new PIXI.Application({
-  resizeTo: window,
+  resizeTo:        window,
   backgroundColor: 0x1a1a2e,
-  antialias: false,           // disable for performance
-  autoDensity: true,
-  resolution: Math.min(window.devicePixelRatio || 1, 1.5),  // cap at 1.5x for perf
+  antialias:       false,
+  autoDensity:     true,
+  resolution:      Math.min(window.devicePixelRatio || 1, 1.5),
   powerPreference: 'high-performance',
 });
 appHost.appendChild(app.view);
 
+// ─── HUD (Live/Demo indicator) ────────────────────────────────────────────────
+// Styled via index.html <style> block — just set id and let CSS do the work.
 const hud = document.createElement('div');
 hud.id = 'mode-hud';
-Object.assign(hud.style, {
-  position: 'fixed',
-  top: '12px',
-  right: '14px',
-  fontFamily: 'system-ui, sans-serif',
-  fontWeight: '700',
-  letterSpacing: '0.4px',
-  zIndex: '15',
-});
 document.body.appendChild(hud);
 
-const tooltip = document.createElement('div');
-Object.assign(tooltip.style, {
-  position: 'fixed',
-  display: 'none',
-  background: 'rgba(18,22,34,0.92)',
-  border: '1px solid rgba(172,196,236,0.45)',
-  color: '#eaf3ff',
-  padding: '6px 8px',
-  borderRadius: '6px',
-  font: '12px/1.35 system-ui, sans-serif',
-  zIndex: '20',
-  pointerEvents: 'none',
+// ─── Tooltip ──────────────────────────────────────────────────────────────────
+// The tooltip DOM element lives here and is driven by custom events from the
+// scene, keeping scene code free of DOM node references.
+const tooltip = document.getElementById('pp-tooltip') ?? (() => {
+  const el = document.createElement('div');
+  el.id = 'pp-tooltip';
+  document.body.appendChild(el);
+  return el;
+})();
+
+document.addEventListener('tooltip-show', (e) => {
+  const { x, y, html } = e.detail ?? {};
+
+  // html=null means a position-only update from pointermove — reposition without re-rendering
+  if (html !== null && html !== undefined) {
+    tooltip.innerHTML     = html;
+    tooltip.style.display = 'block';
+  }
+  if (tooltip.style.display === 'none') return;
+
+  if (x != null && y != null) {
+    const margin = 10;
+    const tipW   = tooltip.offsetWidth  || 180;
+    const tipH   = tooltip.offsetHeight || 50;
+    const left   = (x + margin + tipW > window.innerWidth)  ? x - tipW - margin : x + margin;
+    const top    = Math.max(margin, Math.min(y - tipH / 2, window.innerHeight - tipH - margin));
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top  = `${top}px`;
+  }
 });
-document.body.appendChild(tooltip);
+
+document.addEventListener('tooltip-hide', () => {
+  tooltip.style.display = 'none';
+});
+
+// ─── Signal bus ───────────────────────────────────────────────────────────────
 
 const signalBus = new SignalBus();
 signalBus.onModeChange((mode) => {
-  if (mode === 'live') {
-    hud.textContent = '● LIVE';
-    hud.style.color = '#5aaeff';
-  } else {
-    hud.textContent = '● DEMO';
-    hud.style.color = '#f2a641';
-  }
+  hud.textContent  = mode === 'live' ? '● LIVE' : '● DEMO';
+  hud.dataset.mode = mode;         // CSS targets [data-mode="live"] / [data-mode="demo"]
 });
 signalBus.start();
 
+// ─── Scene world container ────────────────────────────────────────────────────
+
 const world = new PIXI.Container();
 world.eventMode = 'passive';
-world.baseY = 0;
 app.stage.addChild(world);
 
-const cityScene = new CityScene(app, world, signalBus, tooltip);
+// Pan offset is tracked independently of world.y so fitScene is idempotent.
+let _panOffsetY = 0;
+
+// ─── City scene ───────────────────────────────────────────────────────────────
+
+// Note: tooltip is driven by 'tooltip-show'/'tooltip-hide' DOM events —
+// CityScene no longer receives a DOM node reference.
+const cityScene = new CityScene(app, world, signalBus);
 await cityScene.init();
 
-const pipeRenderer = new PipeRenderer({ signalBus, plotManager: cityScene.plotManager, world });
+// ─── Edit mode subsystems ─────────────────────────────────────────────────────
+
+const pipeRenderer     = new PipeRenderer({ signalBus, plotManager: cityScene.plotManager, world });
 const layoutSerializer = new LayoutSerializer({ initialLayout: signalBus.getLayout(), plotManager: cityScene.plotManager, pipeRenderer });
-const signalLibrary = new SignalLibrary(signalBus, layoutSerializer);
-const buildingPicker = new BuildingPicker(app, world, cityScene, layoutSerializer, cityScene.plotManager);
-const valvePanel = new ValvePanel(signalBus, layoutSerializer);
-const editController = new EditController({ cityScene, signalLibrary, buildingPicker, valvePanel, layoutSerializer, pipeRenderer, world, signalBus });
+const signalLibrary    = new SignalLibrary(signalBus, layoutSerializer);
+const buildingPicker   = new BuildingPicker(app, world, cityScene, layoutSerializer, cityScene.plotManager);
+const valvePanel       = new ValvePanel(signalBus, layoutSerializer);
+const editController   = new EditController({ cityScene, signalLibrary, buildingPicker, valvePanel, layoutSerializer, pipeRenderer, world, signalBus });
 
-let resizeTimer = null;
+// ─── Layout ───────────────────────────────────────────────────────────────────
 
-function fitScene() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  const scale = Math.min(w / REF_WIDTH, h / REF_HEIGHT);
-  const cityOffsetY = world.y - world.baseY;
-  const centeredY = Math.floor((h - REF_HEIGHT * scale) * 0.5);
-  world.scale.set(scale);
-  world.x = Math.floor((w - REF_WIDTH * scale) * 0.5);
-  world.baseY = centeredY;
-  world.y = centeredY + cityOffsetY;
-}
-
-document.addEventListener('layout-updated', () => {
+function applyLayout() {
   const layout = layoutSerializer.serializeAll();
   cityScene.applyLayout(layout.plots);
   pipeRenderer.syncFromLayout(layout.plots);
   signalLibrary.render();
-});
+}
+
+document.addEventListener('layout-updated', applyLayout);
 
 document.addEventListener('pipe-menu', (event) => {
   const { plotId, x, y } = event.detail;
@@ -104,10 +116,7 @@ document.addEventListener('pipe-menu', (event) => {
   }, { icon: '⚙' });
   makeMenuButton(menu, 'Remove pipe', () => {
     layoutSerializer.removePipe(plotId);
-    const layout = layoutSerializer.serializeAll();
-    cityScene.applyLayout(layout.plots);
-    pipeRenderer.syncFromLayout(layout.plots);
-    signalLibrary.render();
+    applyLayout();
     menu.remove();
   }, { icon: '✕', color: '#f07a7a' });
   positionWithin(menu, x + 8, y + 8);
@@ -123,26 +132,42 @@ document.addEventListener('plot-selected', (event) => {
     document.dispatchEvent(new CustomEvent('pipe-menu', {
       detail: {
         plotId: event.detail.plotId,
-        x: world.x + event.detail.plot.x * scale,
-        y: world.y + event.detail.plot.y * scale,
+        x:      world.x + event.detail.plot.x * scale,
+        y:      world.y + event.detail.plot.y * scale,
       },
     }));
   }
 });
 
-fitScene();
+// ─── Resize / fit ─────────────────────────────────────────────────────────────
+
+function fitScene() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const scale     = Math.min(w / REF_WIDTH, h / REF_HEIGHT);
+  const centeredY = Math.floor((h - REF_HEIGHT * scale) * 0.5);
+  world.scale.set(scale);
+  world.x     = Math.floor((w - REF_WIDTH * scale) * 0.5);
+  // baseY is read by edit_controller._applyProgress for its enter/exit
+  // animation offset — keep it in sync with centeredY on every resize.
+  world.baseY = centeredY;
+  // _panOffsetY tracks any additional manual pan so it survives resize.
+  world.y     = centeredY + _panOffsetY;
+}
+
+let _resizeTimer = null;
 window.addEventListener('resize', () => {
-  if (resizeTimer) {
-    window.clearTimeout(resizeTimer);
-  }
-  resizeTimer = window.setTimeout(fitScene, 150);
+  window.clearTimeout(_resizeTimer);
+  _resizeTimer = window.setTimeout(fitScene, 150);
 });
+fitScene();
+
+// ─── Remote layout sync ────────────────────────────────────────────────────────
 
 signalBus.onLayoutChange((layout) => {
   if (editController.isEditMode) return;
   layoutSerializer.load(layout);
-  cityScene.applyLayout(layoutSerializer.serializeAll().plots);
-  signalLibrary.render();
+  applyLayout();
 });
 
 signalBus.onLayoutSaveStatus((status) => {
@@ -153,6 +178,30 @@ signalBus.onLayoutSaveStatus((status) => {
   }
 });
 
+// ─── Render loop ───────────────────────────────────────────────────────────────
+
 app.ticker.add((delta) => {
   cityScene.update(delta);
 });
+
+// ─── Visibility-aware demo oscillator pause ────────────────────────────────────
+// Stops the demo setInterval from burning CPU when the tab is hidden.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    signalBus.pauseDemo?.();
+  } else {
+    signalBus.resumeDemo?.();
+  }
+});
+
+// ─── Cleanup / teardown ────────────────────────────────────────────────────────
+// Called on hot-reload in dev, or if the component is ever unmounted.
+export function destroy() {
+  signalBus.stop();
+  app.ticker.stop();
+  app.destroy(true, { children: true, texture: true, baseTexture: true });
+  document.removeEventListener('layout-updated', applyLayout);
+  window.clearTimeout(_resizeTimer);
+  hud.remove();
+  tooltip.remove();
+}

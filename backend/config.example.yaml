@@ -17,6 +17,12 @@ signals:
     metric: "memory_used"
     interval: 5
 
+  - id: "disk_used"
+    adapter: "system"
+    metric: "disk_used"
+    path: "/"
+    interval: 30
+
   - id: "weather_text"
     adapter: "weather"
     units: "fahrenheit"
@@ -42,3 +48,25 @@ signals:
     type: "gauge"
     max_value: 10
     interval: 10
+
+  # ── Auth Gate ────────────────────────────────────────────────────────────────
+  # Monitors authentication failures and drives the Auth Gate building.
+  #
+  # mode: log_watcher
+  #   Tails a local log file for failure patterns. Works with sshd, PAM,
+  #   nginx auth, or any log that writes failure lines.
+  #
+  # mode: webhook
+  #   Counts failure events POSTed to POST /hooks/auth_failures
+  #   Use this when your auth service can call out directly, or with
+  #   a fail2ban action like:
+  #     actionban = curl -s -X POST http://localhost:8000/hooks/auth_failures
+  #
+  - id: "auth_failures"
+    adapter: "auth_gate"
+    mode: "log_watcher"             # log_watcher | webhook
+    log_path: "/var/log/auth.log"   # Debian/Ubuntu; use /var/log/secure on RHEL/Fedora
+    pattern: "(Failed password|Invalid user|authentication failure|BREAK-IN ATTEMPT)"
+    window_seconds: 60              # rolling window — failures counted over this period
+    max_rate: 20                    # failures/window that maps to value 1.0 (full alarm)
+    interval: 5

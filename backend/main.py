@@ -17,10 +17,10 @@ from backend.signal_engine import SignalEngine
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR     = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
-CONFIG_PATH = BASE_DIR / "backend" / "config.yaml"
-LAYOUT_PATH = BASE_DIR / "backend" / "layout.yaml"
+CONFIG_PATH  = BASE_DIR / "backend" / "config.yaml"
+LAYOUT_PATH  = BASE_DIR / "backend" / "layout.yaml"
 
 engine = SignalEngine(config_path=str(CONFIG_PATH), layout_path=str(LAYOUT_PATH))
 
@@ -37,20 +37,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PixelPulse", lifespan=lifespan)
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Response
+
 
 @app.middleware("http")
 async def no_cache_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
 app.include_router(config_api_router)
 
 
+# ── Static file serving ────────────────────────────────────────────────────────
+
 @app.get("/")
 async def index() -> FileResponse:
-    """Serve the frontend entrypoint when available."""
+    """Serve the frontend entrypoint."""
     index_path = FRONTEND_DIR / "index.html"
     if index_path.exists():
         return FileResponse(str(index_path))
@@ -61,21 +64,21 @@ async def index() -> FileResponse:
 async def serve_static(file_path: str) -> FileResponse:
     """Serve frontend JS modules and project assets at their original relative paths.
 
-    Checks frontend/ first (main.js, scene/*, edit_mode/*, etc.), then falls
-    back to the project root for assets/sprites/ and similar shared resources.
+    Checks frontend/ first, then falls back to the project root for
+    assets/sprites/ and similar shared resources.
     """
-    # Resolve against frontend directory first
     candidate = (FRONTEND_DIR / file_path).resolve()
     if candidate.is_file() and candidate.is_relative_to(FRONTEND_DIR):
         return FileResponse(str(candidate))
 
-    # Fall back to project root (assets/, plugins/, etc.)
     asset_candidate = (BASE_DIR / file_path).resolve()
     if asset_candidate.is_file() and asset_candidate.is_relative_to(BASE_DIR):
         return FileResponse(str(asset_candidate))
 
     return JSONResponse({"detail": "Not found"}, status_code=404)
 
+
+# ── WebSocket ──────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
@@ -88,9 +91,40 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await engine.unregister_client(websocket)
 
 
+# ── Webhook ingestion ──────────────────────────────────────────────────────────
+
+@app.post("/hooks/auth_failures")
+async def auth_failures_webhook(request: Request) -> dict[str, str]:
+    """
+    Increment the auth_failures rolling counter.
+
+    Accepts an optional JSON body ``{"count": N}`` to record multiple
+    failures in one POST.  Defaults to 1 if body is absent or malformed.
+
+    Example (from fail2ban action or sshd script):
+        curl -s -X POST http://localhost:8000/hooks/auth_failures
+        curl -s -X POST http://localhost:8000/hooks/auth_failures \\
+             -H 'Content-Type: application/json' -d '{"count": 3}'
+    """
+    count = 1
+    try:
+        body = await request.json()
+        count = max(1, int(body.get("count", 1)))
+    except Exception:
+        pass  # empty body or non-JSON is fine — default to 1
+
+    # Find the AuthGateAdapter instance registered under the engine
+    from backend.adapters.builtin.auth_gate import AuthGateAdapter
+    for adapter in engine._adapters:
+        if isinstance(adapter, AuthGateAdapter) and adapter._mode == "webhook":
+            await adapter.record_failure(count)
+
+    return {"status": "accepted", "count": str(count)}
+
+
 @app.post("/hooks/{hook_path:path}")
 async def webhook_ingest(hook_path: str, request: Request) -> dict[str, str]:
-    """Ingest webhook payloads and route them to webhook adapters."""
+    """Ingest generic webhook payloads and route them to webhook adapters."""
     payload = await request.json()
     routed = await WebhookAdapter.dispatch_payload(
         "/" + hook_path,

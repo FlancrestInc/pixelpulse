@@ -22,11 +22,74 @@
       canvas {
         display: block;
       }
+
+      /* ── Live / Demo HUD indicator ─────────────────────────────────────── */
+      #mode-hud {
+        position: fixed;
+        top: 12px;
+        right: 14px;
+        font-family: system-ui, sans-serif;
+        font-weight: 700;
+        font-size: 13px;
+        letter-spacing: 0.4px;
+        z-index: 15;
+        pointer-events: none;
+        /* Smooth colour transition when mode switches */
+        transition: color 0.4s ease;
+      }
+
+      #mode-hud[data-mode="live"] {
+        color: #5aaeff;
+      }
+
+      #mode-hud[data-mode="demo"] {
+        color: #f2a641;
+      }
+
+      /* ── Building / signal tooltip ─────────────────────────────────────── */
+      #pp-tooltip {
+        position: fixed;
+        display: none;
+        background: rgba(18, 22, 34, 0.92);
+        border: 1px solid rgba(172, 196, 236, 0.45);
+        color: #eaf3ff;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font: 12px/1.4 system-ui, sans-serif;
+        z-index: 20;
+        pointer-events: none;
+        max-width: 220px;
+        /* Subtle fade-in */
+        animation: pp-tooltip-in 0.1s ease;
+      }
+
+      @keyframes pp-tooltip-in {
+        from { opacity: 0; transform: translateY(3px); }
+        to   { opacity: 1; transform: translateY(0);   }
+      }
+
+      #pp-tooltip .tt-label {
+        font-weight: 700;
+        margin-bottom: 2px;
+      }
+
+      #pp-tooltip .tt-signal {
+        opacity: 0.7;
+        font-size: 11px;
+      }
+
+      #pp-tooltip .tt-value {
+        color: #9ad4f5;
+        font-size: 11px;
+        margin-top: 3px;
+      }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.x/dist/pixi.min.js"></script>
   </head>
   <body>
     <div id="app"></div>
+    <!-- Tooltip element pre-declared so CSS animation applies correctly -->
+    <div id="pp-tooltip" role="tooltip" aria-live="polite"></div>
     <script type="module" src="./main.js"></script>
   </body>
 </html>
