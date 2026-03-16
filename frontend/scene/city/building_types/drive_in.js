@@ -112,9 +112,15 @@ export class DriveIn {
         this.screen.moveTo(-57, y); this.screen.lineTo(57, y);
       }
     } else {
+      const idleGlow = this.state === 'idle' ? 0.22 + Math.abs(Math.sin(t * 0.45)) * 0.08 : 0.08;
       this.screen.beginFill(0x222222, 0.8);
       this.screen.drawRect(-57, -167, 114, 67);
       this.screen.endFill();
+      if (this.state !== 'disconnected') {
+        this.screen.beginFill(color, idleGlow);
+        this.screen.drawRect(-57, -167, 114, 67);
+        this.screen.endFill();
+      }
     }
   }
 
@@ -130,6 +136,10 @@ export class DriveIn {
 
   update() {
     this._drawScreen();
+
+    if (this.carContainer) {
+      this.carContainer.alpha = this.state === 'disconnected' ? 0.35 : 1;
+    }
 
     const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);
     this.alertOverlay.alpha = 0.15 + pulse * 0.55;

@@ -39,6 +39,7 @@ export class CityScene {
     this.layoutApplied = false;
     this.animationsPaused = false;
     this.vehicleManager = null;
+    this._layoutSignature = '';
   }
 
   async init() {
@@ -58,7 +59,7 @@ export class CityScene {
     this.plotManager = new PlotManager(this.root, buildPlotDefs());
     this.world.addChild(this.root);
 
-    this.signalBus.subscribe('net_bytes_recv', (signal) => {
+    this.signalBus.subscribe('http_requests', (signal) => {
       if (this.vehicleManager) this.vehicleManager.onSignal(signal);
     });
 
@@ -68,18 +69,10 @@ export class CityScene {
     });
 
     this.signalBus.subscribeAny(() => {
-      const layoutPlots = this.signalBus.getLayout()?.plots ?? [];
-      if (!this.layoutApplied && layoutPlots.length) {
-        this.applyLayout(layoutPlots);
-        this.layoutApplied = true;
-      }
+      this._applyLayoutIfReady();
     });
 
-    const layoutPlots = this.signalBus.getLayout()?.plots ?? [];
-    if (!this.layoutApplied && layoutPlots.length) {
-      this.applyLayout(layoutPlots);
-      this.layoutApplied = true;
-    }
+    this._applyLayoutIfReady();
   }
 
   /** Dim/brighten the sky while switching mode. */
@@ -93,6 +86,9 @@ export class CityScene {
   }
 
   applyLayout(layoutPlots) {
+    const nextSignature = JSON.stringify(layoutPlots ?? []);
+    if (this._layoutSignature === nextSignature && this.actors.length > 0) return;
+    this._layoutSignature = nextSignature;
     this.actors.forEach((actor) => actor.destroy());
     this.actors = [];
     this.actorMeta = [];
@@ -133,6 +129,7 @@ export class CityScene {
         });
       }
     });
+    this.layoutApplied = true;
   }
 
   _attachTooltip(actor, entry) {
@@ -172,6 +169,12 @@ export class CityScene {
     });
 
     this.actors.forEach((actor) => actor.update(delta));
+  }
+
+  _applyLayoutIfReady() {
+    const layoutPlots = this.signalBus.getLayout()?.plots ?? [];
+    if (!layoutPlots.length) return;
+    this.applyLayout(layoutPlots);
   }
 }
 

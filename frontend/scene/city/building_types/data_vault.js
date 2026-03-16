@@ -14,6 +14,7 @@ export class DataVault {
     this.disconnectIcon = null;
     this.state = 'idle';
     this._eventTimer = 0;
+    this._beacon = null;
   }
 
   init() {
@@ -57,6 +58,11 @@ export class DataVault {
     ant.drawEllipse(10, -128, 10, 5);
     ant.endFill();
 
+    this._beacon = new PIXI.Graphics();
+    this._beacon.beginFill(p.trim, 0.9);
+    this._beacon.drawCircle(10, -128, 4);
+    this._beacon.endFill();
+
     // Loading dock
     const dock = new PIXI.Graphics();
     dock.beginFill(0x2a2a1a, 0.6);
@@ -96,7 +102,7 @@ export class DataVault {
     this.disconnectIcon.position.set(0, -128);
     this.disconnectIcon.visible = false;
 
-    this.container.addChild(body, roof, door, ant, dock, this.truck, this.alertOverlay, this.disconnectIcon);
+    this.container.addChild(body, roof, door, ant, this._beacon, dock, this.truck, this.alertOverlay, this.disconnectIcon);
     this.container.position.set(this.plot.x, this.plot.y);
   }
 
@@ -128,6 +134,13 @@ export class DataVault {
           this.truckX = -200;
         }
       }
+    }
+
+    if (this._beacon) {
+      const beaconPulse = this.state === 'disconnected'
+        ? 0.25
+        : 0.45 + Math.abs(Math.sin(performance.now() * 0.003)) * 0.45;
+      this._beacon.alpha = beaconPulse;
     }
 
     const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);

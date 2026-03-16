@@ -1,6 +1,6 @@
 /**
  * Vehicle traffic system. Cars and trucks animate along road1 and road2.
- * Density and speed scale with a net_throughput signal (0.0–1.0).
+ * Density and speed scale with a traffic-like signal (0.0–1.0).
  */
 
 const ROAD1_Y = 597;  // centre of road1 lane
@@ -90,7 +90,11 @@ export class VehicleManager {
   }
 
   onSignal(signal) {
-    this.density = Math.max(0, Math.min(Number(signal?.value ?? 0.2), 1));
+    const rawValue = Number(signal?.value ?? 0.2);
+    const normalized = signal?.type === 'rate'
+      ? rawValue / 10
+      : rawValue;
+    this.density = Math.max(0.12, Math.min(normalized, 1));
   }
 
   update(delta) {
@@ -106,7 +110,7 @@ export class VehicleManager {
 
     // Spawn new vehicles based on density
     this._spawnTimer += delta;
-    const interval = Math.max(8, this._spawnInterval * (1 - this.density * 0.85));
+    const interval = Math.max(18, this._spawnInterval * (1 - this.density * 0.72));
     if (this._spawnTimer >= interval) {
       this._spawnTimer = 0;
       this._spawnVehicle();
@@ -114,14 +118,14 @@ export class VehicleManager {
   }
 
   _spawnVehicle() {
-    const maxVehicles = Math.floor(4 + this.density * 20);
+    const maxVehicles = Math.floor(3 + this.density * 10);
     if (this.vehicles.length >= maxVehicles) return;
 
     const lane = Math.random() < 0.55 ? ROAD1_Y : ROAD2_Y;
     // road1: mostly left→right, road2: mostly right→left
     const defaultDir = lane === ROAD1_Y ? 1 : -1;
     const direction = Math.random() < 0.85 ? defaultDir : -defaultDir;
-    const baseSpeed = 1.5 + this.density * 3.5;
+    const baseSpeed = 1.1 + this.density * 2.7;
     const speed = baseSpeed * (0.7 + Math.random() * 0.6);
     const color = CAR_COLORS[Math.floor(Math.random() * CAR_COLORS.length)];
     const type = Math.random() < 0.15 ? 'truck' : 'car';

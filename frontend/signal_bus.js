@@ -144,29 +144,93 @@ export class SignalBus {
     const t0 = performance.now();
     this.demoTimer = window.setInterval(() => {
       const t = (performance.now() - t0) / 1000;
+
+      // Showcase demo profile:
+      // - cpu_load: slow breathing load with occasional pressure spikes
+      // - memory_used: steadier elevated plateau
+      // - disk_used: slow low-amplitude storage drift
+      // - http_requests: livelier pulse for cafe and road activity
+      // - news_ticker: rotating operational headlines
+      // - weather_text: slower changing local conditions
+      // - active_streams: medium-energy crowd curve for the drive-in
+      // - deploy_event: occasional event pulse for the data vault
+      // - sky_time: smooth full-day loop
+      const timestamp = Date.now() / 1000;
+      const cpuLoad = this._clamp01(0.48 + Math.sin(t * 0.55) * 0.18 + Math.max(0, Math.sin(t * 0.12 - 0.8)) * 0.28);
+      const memoryUsed = this._clamp01(0.58 + Math.sin(t * 0.18 + 0.9) * 0.08 + Math.sin(t * 0.05) * 0.04);
+      const diskUsed = this._clamp01(0.34 + Math.sin(t * 0.07 + 0.4) * 0.09);
+      const httpRequests = this._clamp01(0.18 + Math.abs(Math.sin(t * 0.9)) * 0.42 + Math.max(0, Math.sin(t * 2.6)) * 0.12);
+      const activeStreams = this._clamp01(0.3 + Math.sin(t * 0.35 + 1.2) * 0.16 + Math.max(0, Math.sin(t * 0.8 - 1.7)) * 0.2);
+      const deployEvent = Math.floor(t) % 32 === 0 ? 1 : 0;
+
       this._emitSignal({
         id: 'cpu_load',
         type: 'gauge',
-        value: 0.5 + Math.sin(t * 0.85) * 0.42,
+        value: cpuLoad,
         label: 'CPU Load',
         source: 'demo',
-        timestamp: Date.now() / 1000,
+        timestamp,
       });
       this._emitSignal({
         id: 'memory_used',
         type: 'gauge',
-        value: 0.45 + Math.sin(t * 0.48 + 1.2) * 0.38,
+        value: memoryUsed,
         label: 'Memory Used',
         source: 'demo',
-        timestamp: Date.now() / 1000,
+        timestamp,
+      });
+      this._emitSignal({
+        id: 'disk_used',
+        type: 'gauge',
+        value: diskUsed,
+        label: 'Disk Used',
+        source: 'demo',
+        timestamp,
+      });
+      this._emitSignal({
+        id: 'http_requests',
+        type: 'rate',
+        value: httpRequests * 10,
+        label: 'HTTP Requests',
+        source: 'demo',
+        timestamp,
+      });
+      this._emitSignal({
+        id: 'news_ticker',
+        type: 'text',
+        value: [
+          'PIXELPULSE DEMO CITY ONLINE',
+          'CPU LOAD NOMINAL ACROSS THE DISTRICT',
+          'CAFE TRAFFIC RISING AFTER LUNCH',
+          'STREAM ACTIVITY DRAWING CROWDS TONIGHT',
+        ][Math.floor(t / 10) % 4],
+        label: 'News Ticker',
+        source: 'demo',
+        timestamp,
       });
       this._emitSignal({
         id: 'weather_text',
         type: 'text',
-        value: ['Clear', 'Cloudy', 'Rain showers', 'Windy'][Math.floor(t / 4) % 4],
+        value: ['Clear and cool', 'Partly cloudy', 'Light rain nearby', 'Breezy evening'][Math.floor(t / 14) % 4],
         label: 'Weather',
         source: 'demo',
-        timestamp: Date.now() / 1000,
+        timestamp,
+      });
+      this._emitSignal({
+        id: 'active_streams',
+        type: 'gauge',
+        value: activeStreams,
+        label: 'Active Streams',
+        source: 'demo',
+        timestamp,
+      });
+      this._emitSignal({
+        id: 'deploy_event',
+        type: 'event',
+        value: deployEvent,
+        label: 'Deploy Event',
+        source: 'demo',
+        timestamp,
       });
       this._emitSignal({
         id: 'sky_time',
@@ -174,7 +238,7 @@ export class SignalBus {
         value: ((t % 600) / 600),
         label: 'Sky Time',
         source: 'demo',
-        timestamp: Date.now() / 1000,
+        timestamp,
       });
     }, 600);
   }
@@ -247,5 +311,9 @@ export class SignalBus {
 
     this.listeners.get(signal.id)?.forEach((cb) => cb(signal));
     this.anyListeners.forEach((cb) => cb(signal));
+  }
+
+  _clamp01(value) {
+    return Math.max(0, Math.min(Number(value ?? 0), 1));
   }
 }
