@@ -13,6 +13,7 @@ import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.layout_validation import LayoutValidationError, validate_layout_payload
 from backend.plugin_loader import load_adapter_classes_with_report
 
 router = APIRouter(prefix="/api", tags=["config"])
@@ -135,9 +136,17 @@ async def get_layout() -> dict[str, Any]:
 @router.put("/layout")
 async def put_layout(request: LayoutWriteRequest) -> dict[str, str]:
     try:
+        await validate_layout_payload(request.layout, config_path=CONFIG_PATH)
         await _atomic_write_yaml(LAYOUT_PATH, request.layout)
         if _layout_event_publisher is not None:
             await _layout_event_publisher({"type": "layout_saved", "layout": request.layout})
+    except LayoutValidationError as exc:
+        if _layout_event_publisher is not None:
+            await _layout_event_publisher({"type": "layout_save_failed", "error": "Layout validation failed", "errors": exc.errors})
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Layout validation failed", "errors": exc.errors},
+        ) from exc
     except Exception as exc:
         if _layout_event_publisher is not None:
             await _layout_event_publisher({"type": "layout_save_failed", "error": str(exc)})
