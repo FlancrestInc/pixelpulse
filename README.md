@@ -14,7 +14,7 @@ The display is a flat pixel-art cityscape — Sim City-style — rendered in you
 
 | What You See | What It Means |
 |---|---|
-| Road traffic density and speed | Network throughput (`net_bytes_recv`) |
+| Road traffic density and speed | Request activity (`http_requests`) |
 | Windmill rotation speed | CPU load |
 | Server Tower LED blink rate + load bar | CPU load |
 | Power station chimney smoke | CPU load |
@@ -25,11 +25,11 @@ The display is a flat pixel-art cityscape — Sim City-style — rendered in you
 | Café neon sign flicker | HTTP request rate |
 | Drive-In Theater screen + parked cars | Active streams gauge |
 | Data Vault delivery truck | Any event signal (backup, deploy, etc.) |
-| Auth Gate alarm light | Authentication failures *(backend adapter planned — see Known Issues)* |
+| Data Vault truck arrival + nearby walkers | Event pulse such as deploys or backups |
 | Sky gradient | Time of day (real clock or configurable) |
 | Red sinusoidal pulse overlay on building | Signal has crossed its configured alert threshold |
 
-A **● LIVE / ● DEMO** indicator in the top-right corner shows whether real data is flowing. If the backend isn't running, the scene falls back to a pleasant simulated demo mode automatically.
+A **● LIVE / ● DEMO** indicator in the top-right corner shows whether real data is flowing. If the backend isn't running, the city falls back to a curated showcase demo automatically, using the same default layout as the live configuration.
 
 ---
 
@@ -126,6 +126,22 @@ http://localhost:8000
 The pixel city will load. The **● DEMO** indicator in the top-right corner should switch to **● LIVE** within a few seconds as the first real data arrives.
 
 **That's it!** Your system metrics are now driving the city.
+
+### Showcase layout
+
+The current polished demo centers on a curated nine-plot city:
+
+- `main_1` Windmill driven by `cpu_load`
+- `main_2` Power Station driven by `memory_used`
+- `main_3` Server Tower driven by `cpu_load`
+- `main_4` Warehouse driven by `disk_used`
+- `main_5` Bank Ticker driven by `news_ticker`
+- `main_6` Bus Stop driven by `weather_text`
+- `mid_1` Cafe driven by `http_requests`
+- `mid_2` Data Vault driven by `deploy_event`
+- `mid_3` Drive-In driven by `active_streams`
+
+If the backend is unavailable, demo mode still drives this same layout with simulated signals so the city remains presentable.
 
 ---
 
@@ -719,9 +735,9 @@ You may have multiple Python versions. Try: `python3 -m pip install -r backend/r
 
 | Item | Status | Notes |
 |---|---|---|
-| `auth_failures` backend adapter | 🔧 Planned | The `auth_gate` building type is registered but is a placeholder (grey box). The backend adapter that counts authentication failures and emits the signal is not yet implemented. |
-| `characters.js` and `vehicles.js` fully populated | 🔧 Partial | Vehicle traffic on roads is implemented and signal-driven. Pedestrian/character animations are not yet implemented. |
-| Extended building catalogue | 📋 Planned (Phase 8a) | `auth_gate`, `construction_yard`, `swimming_pool`, `billboard`, `city_park`, `dockyard` are all registered but render as placeholders. Full implementations planned in Phase 8a. |
+| `auth_gate` building | 🔧 Planned | The backend auth adapter work is no longer the blocker. The remaining gap is the `auth_gate` visual itself, which is still a placeholder and is not part of the polished demo showcase. |
+| `characters.js` and `vehicles.js` fully populated | 🔧 Partial | Vehicle traffic is implemented and lightweight walkers now appear for the cafe, drive-in, and deploy-event beats. A richer crowd/character system is still planned. |
+| Extended building catalogue | 📋 Planned (Phase 8a) | `auth_gate`, `construction_yard`, `swimming_pool`, `billboard`, `city_park`, and `dockyard` still render as placeholders and are intentionally outside the current showcase slice. |
 | Signal history / focus mode | 📋 Planned (Phase 7) | Rolling 10-minute history buffer per signal with a sparkline overlay panel anchored to the clicked building. |
 | Calendar / to-do integration | 📋 Planned (Phase 8b) | Adapter to read from iCal / CalDAV / Google Calendar and surface upcoming events in the ticker or scene state. |
 | Raspberry Pi kiosk autostart | 📋 Planned (Phase 8c) | Formal `systemd` service file and Chromium kiosk launch script committed to the repo. |

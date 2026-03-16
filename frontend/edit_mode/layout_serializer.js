@@ -66,7 +66,7 @@ export class LayoutSerializer {
   setPipe(plotId, signalId, valve = null) {
     const plot = this.ensurePlot(plotId);
     plot.signal = signalId;
-    plot.valve = valve ? { ...valve } : plot.valve;
+    plot.valve = valve ? { ...valve } : (plot.valve ?? { range_min: 0, range_max: 1, alert_threshold: 0.85, label: signalId });
     this.pipeRenderer?.addPipe(signalId, plotId);
     if (plot.valve) this.pipeRenderer?.updateValve(plotId, plot.valve);
   }
