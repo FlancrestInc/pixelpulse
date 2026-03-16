@@ -1,4 +1,5 @@
 import { getBuildingType } from './buildings.js';
+import { CharacterManager } from './characters.js';
 import { CityEnvironment } from './environment.js';
 import { PlotManager } from './plot_manager.js';
 import { VehicleManager } from './vehicles.js';
@@ -39,6 +40,7 @@ export class CityScene {
     this.layoutApplied = false;
     this.animationsPaused = false;
     this.vehicleManager = null;
+    this.characterManager = null;
     this._layoutSignature = '';
   }
 
@@ -56,6 +58,7 @@ export class CityScene {
     this.root.addChild(midStrip);
 
     this.vehicleManager = new VehicleManager(this.root);
+    this.characterManager = new CharacterManager(this.root, REF_WIDTH);
     this.plotManager = new PlotManager(this.root, buildPlotDefs());
     this.world.addChild(this.root);
 
@@ -66,6 +69,26 @@ export class CityScene {
     this.signalBus.subscribe('sky_time', (signal) => {
       this.environment.timeOfDay = Math.max(0, Math.min(Number(signal?.value ?? 0), 1));
       this.environment.followSystemClock = false;
+    });
+
+    this.signalBus.subscribe('http_requests', (signal) => {
+      const value = Number(signal?.value ?? 0);
+      if (this.characterManager && value > 3.5) {
+        this.characterManager.triggerSceneBeat('cafe', { busy: value > 6 });
+      }
+    });
+
+    this.signalBus.subscribe('active_streams', (signal) => {
+      const value = Number(signal?.value ?? 0);
+      if (this.characterManager && value > 0.45) {
+        this.characterManager.triggerSceneBeat('drive_in');
+      }
+    });
+
+    this.signalBus.subscribe('deploy_event', (signal) => {
+      if (this.characterManager && signal?.value) {
+        this.characterManager.triggerSceneBeat('deploy');
+      }
     });
 
     this.signalBus.subscribeAny(() => {
@@ -151,6 +174,7 @@ export class CityScene {
   update(delta) {
     this.environment.update(delta);
     if (this.vehicleManager) this.vehicleManager.update(delta);
+    if (this.characterManager) this.characterManager.update(delta);
     if (this.animationsPaused) return;
 
     const nowSec = Date.now() / 1000;
