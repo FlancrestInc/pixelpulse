@@ -83,7 +83,13 @@ export class EditController {
   }
 
   showSavedToast()     { showToast('✓ Layout saved — return to display mode or keep editing', 'success', 2200); }
-  showSaveFailedToast(){ showToast('Layout save failed — changes may not persist', 'error', 3000); }
+  showSaveFailedToast(error = null) {
+    const reason = error?.detail?.detail?.errors?.[0]?.message
+      ?? error?.detail?.detail?.message
+      ?? error?.detail?.message
+      ?? 'Layout save failed — changes may not persist';
+    showToast(reason, 'error', 3200);
+  }
 
   _setComponentEditState() {
     const e = this.mode === 'edit';
@@ -192,7 +198,7 @@ export class EditController {
   async exitEditMode() {
     if (this.mode !== 'edit') return;
     try { await this.layoutSerializer.save(); }
-    catch { this.showSaveFailedToast(); }
+    catch (error) { this.showSaveFailedToast(error); }
     this._hideHint();
     this._animateTo('display');
   }

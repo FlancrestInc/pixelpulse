@@ -186,7 +186,17 @@ export class LayoutSerializer {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ layout: payload }),
     });
-    if (!response.ok) throw new Error(`Layout save failed (${response.status})`);
+    if (!response.ok) {
+      let detail = null;
+      try {
+        detail = await response.json();
+      } catch (_error) {
+        detail = null;
+      }
+      const error = new Error(`Layout save failed (${response.status})`);
+      error.detail = detail;
+      throw error;
+    }
     return payload;
   }
 
