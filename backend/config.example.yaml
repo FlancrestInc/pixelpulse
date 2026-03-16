@@ -3,7 +3,7 @@ server:
   port: 8000
 
 sky_driver:
-  mode: "clock"         # clock | cycle | signal
+  mode: "clock"
   cycle_minutes: 10
 
 signals:
@@ -48,6 +48,13 @@ signals:
     type: "gauge"
     max_value: 10
     interval: 10
+
+  - id: "deploy_event"
+    adapter: "webhook"
+    path: "/hooks/deploy-event"
+    type: "event"
+    value_key: "value"
+    interval: 1
 
   # ── Auth Gate ────────────────────────────────────────────────────────────────
   # Monitors authentication failures and drives the Auth Gate building.

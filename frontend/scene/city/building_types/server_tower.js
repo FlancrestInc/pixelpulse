@@ -98,7 +98,9 @@ export class ServerTower {
     const blinkRate = 0.008 + this.value * 0.06;
     this.windows.forEach((win, i) => {
       const phase = (performance.now() * blinkRate + i * 0.8) % (Math.PI * 2);
-      win.alpha = this.state === 'idle' ? 0.3 : 0.2 + Math.abs(Math.sin(phase)) * 0.8;
+      win.alpha = this.state === 'idle'
+        ? 0.34 + Math.abs(Math.sin(phase * 0.35)) * 0.18
+        : 0.2 + Math.abs(Math.sin(phase)) * 0.8;
     });
 
     const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);

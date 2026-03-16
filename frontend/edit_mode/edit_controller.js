@@ -63,13 +63,26 @@ export class EditController {
     ].join(';');
     document.body.appendChild(this.sourceNodes);
     this._refreshSourceNodes();
+
+    this.hint = document.createElement('div');
+    this.hint.style.cssText = [
+      'position:fixed', 'right:14px', 'bottom:68px', 'z-index:79',
+      'max-width:280px', 'padding:10px 12px',
+      'background:rgba(20,28,42,0.94)',
+      'border:1px solid rgba(130,170,220,0.35)',
+      'border-radius:10px', 'color:#d8eeff',
+      'font:12px/1.45 system-ui,sans-serif',
+      'box-shadow:0 6px 20px rgba(0,0,0,0.28)',
+      'display:none',
+    ].join(';');
+    document.body.appendChild(this.hint);
   }
 
   _setButtonLabel() {
     this.button.textContent = this.isEditMode ? 'Done ✓' : '⚙';
   }
 
-  showSavedToast()     { showToast('✓ Layout saved', 'success', 2000); }
+  showSavedToast()     { showToast('✓ Layout saved — return to display mode or keep editing', 'success', 2200); }
   showSaveFailedToast(){ showToast('Layout save failed — changes may not persist', 'error', 3000); }
 
   _setComponentEditState() {
@@ -172,6 +185,7 @@ export class EditController {
   enterEditMode() {
     if (this.mode === 'edit') return;
     this._refreshSourceNodes();
+    this._showHint('Golden path: select a signal, click a plot, place a building, tweak the valve, then press Done.');
     this._animateTo('edit');
   }
 
@@ -179,6 +193,18 @@ export class EditController {
     if (this.mode !== 'edit') return;
     try { await this.layoutSerializer.save(); }
     catch { this.showSaveFailedToast(); }
+    this._hideHint();
     this._animateTo('display');
+  }
+
+  _showHint(text) {
+    this.hint.textContent = text;
+    this.hint.style.display = 'block';
+    window.clearTimeout(this._hintTimer);
+    this._hintTimer = window.setTimeout(() => this._hideHint(), 6000);
+  }
+
+  _hideHint() {
+    this.hint.style.display = 'none';
   }
 }

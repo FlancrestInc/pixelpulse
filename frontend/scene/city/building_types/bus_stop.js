@@ -6,9 +6,10 @@ export class BusStop {
 
   static label = 'Bus Stop';
 
-  constructor(app, plot) {
+  constructor(app, plot, style = 'classic_shelter') {
     this.app = app;
     this.plot = plot;
+    this.style = style;
     this.container = new PIXI.Container();
     this.signText = null;
     this.alertOverlay = new PIXI.Graphics();
@@ -17,16 +18,23 @@ export class BusStop {
   }
 
   init() {
+    const palettes = {
+      classic_shelter: { post: 0x6f7a8f, panel: 0x2d3345, trim: 0xbfd2eb },
+      minimal_post: { post: 0x7f8a70, panel: 0x31382a, trim: 0xd9e3b8 },
+      retro_covered: { post: 0x7b6659, panel: 0x362b29, trim: 0xf0d2a8 },
+    };
+    const p = palettes[this.style] ?? palettes.classic_shelter;
+
     const post = new PIXI.Graphics();
-    post.beginFill(0x6f7a8f);
+    post.beginFill(p.post);
     post.drawRect(-5, -130, 10, 130);
     post.endFill();
 
     const panel = new PIXI.Graphics();
-    panel.beginFill(0x2d3345);
+    panel.beginFill(p.panel);
     panel.drawRoundedRect(-68, -148, 136, 58, 8);
     panel.endFill();
-    panel.lineStyle(2, 0xbfd2eb, 0.8);
+    panel.lineStyle(2, p.trim, 0.8);
     panel.drawRoundedRect(-66, -146, 132, 54, 6);
 
     this.signText = new PIXI.Text('Waiting...', { fill: 0xe8f1ff, fontSize: 13 });
@@ -53,6 +61,15 @@ export class BusStop {
   }
 
   update() {
+    if (this.state === 'idle') {
+      this.signText.alpha = 0.88 + Math.sin(performance.now() * 0.002) * 0.05;
+    } else if (this.state === 'disconnected') {
+      this.signText.alpha = 0.45;
+      if (!this.signText.text || this.signText.text === '--') this.signText.text = 'Signal offline';
+    } else {
+      this.signText.alpha = 1;
+    }
+
     const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);
     this.alertOverlay.alpha = 0.15 + pulse * 0.55;
     this.alertOverlay.visible = this.state === 'alert';

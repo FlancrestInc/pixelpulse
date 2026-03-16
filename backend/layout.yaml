@@ -1,20 +1,84 @@
 display:
   plots_per_row: 6
 plots:
-- plot_id: main_1
-- plot_id: main_2
-- plot_id: main_3
-- plot_id: main_4
-- plot_id: main_5
-- plot_id: main_6
-- plot_id: mid_1
-  building: city_park
-  style: central_square
-  signal: active_streams
-  valve:
-    range_min: 0
-    range_max: 1
-    alert_threshold: 0.85
-    label: Active Streams
-- plot_id: mid_2
-- plot_id: mid_3
+  - plot_id: main_1
+    building: windmill
+    style: classic_wood
+    signal: cpu_load
+    valve:
+      range_min: 0
+      range_max: 1
+      alert_threshold: 0.85
+      label: CPU Load
+  - plot_id: main_2
+    building: power_station
+    style: coal_classic
+    signal: memory_used
+    valve:
+      range_min: 0
+      range_max: 1
+      alert_threshold: 0.8
+      label: Memory Used
+  - plot_id: main_3
+    building: server_tower
+    style: rack_classic
+    signal: cpu_load
+    valve:
+      range_min: 0
+      range_max: 1
+      alert_threshold: 0.85
+      label: CPU Load
+  - plot_id: main_4
+    building: warehouse
+    style: industrial_grey
+    signal: disk_used
+    valve:
+      range_min: 0
+      range_max: 1
+      alert_threshold: 0.9
+      label: Disk Used
+  - plot_id: main_5
+    building: bank_ticker
+    style: art_deco
+    signal: news_ticker
+    valve:
+      range_min: 0
+      range_max: 1
+      alert_threshold: 0.85
+      label: News Ticker
+  - plot_id: main_6
+    building: bus_stop
+    style: classic_shelter
+    signal: weather_text
+    valve:
+      range_min: 0
+      range_max: 1
+      alert_threshold: 0.85
+      label: Weather
+  - plot_id: mid_1
+    building: cafe
+    style: corner_bistro
+    signal: http_requests
+    valve:
+      range_min: 0
+      range_max: 10
+      alert_threshold: 7
+      label: HTTP Requests
+  - plot_id: mid_2
+    building: data_vault
+    style: bunker_classic
+    signal: deploy_event
+    valve:
+      range_min: 0
+      range_max: 1
+      alert_threshold: 1
+      label: Deploy Event
+  - plot_id: mid_3
+    building: drive_in
+    style: classic_50s
+    signal: active_streams
+    valve:
+      range_min: 0
+      range_max: 1
+      alert_threshold: 0.85
+      label: Active Streams

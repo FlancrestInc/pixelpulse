@@ -77,6 +77,7 @@ export class CityEnvironment {
     this.container.addChild(this.hills);
     this.stage.addChild(this.container);
     this.lastPalette = null;
+    this._timeDrift = 0;
   }
 
   async init() {
@@ -117,8 +118,9 @@ export class CityEnvironment {
     }
   }
 
-  update() {
+  update(delta = 1) {
     if (this.followSystemClock) this.tickClock();
+    else this._timeDrift = (this._timeDrift + delta * 0.00015) % 1;
     const palette = skyPalette(this.timeOfDay);
     if (!this.lastPalette || this.lastPalette.top !== palette.top || this.lastPalette.bottom !== palette.bottom) {
       drawGradient(this.gradientCtx, this.gradientCanvas, this.gradientTexture, palette.top, palette.bottom);
@@ -127,7 +129,7 @@ export class CityEnvironment {
 
     this.skyline.children.forEach((child, i) => {
       child.tint = palette.mood;
-      child.alpha = 0.65 + Math.sin(performance.now() * 0.0003 + i) * 0.04;
+      child.alpha = 0.68 + Math.sin(performance.now() * 0.00022 + i) * 0.035;
     });
 
     this.hills.tint = lerpColor(0x2d5064, 0x20253a, Math.abs(0.5 - this.timeOfDay) * 2);

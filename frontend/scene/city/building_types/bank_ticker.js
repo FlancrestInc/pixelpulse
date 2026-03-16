@@ -105,11 +105,16 @@ export class BankTicker {
 
   update(delta) {
     if (this.tickerText) {
-      const scrollSpeed = this.state === 'disconnected' ? 0 : 1.2;
+      if (this.state === 'disconnected' && !this.currentText.includes('OFFLINE')) {
+        this.currentText = 'SIGNAL OFFLINE ● ';
+        this.tickerText.text = this.currentText + this.currentText + this.currentText;
+      }
+      const scrollSpeed = this.state === 'idle' ? 0.75 : this.state === 'disconnected' ? 0 : 1.2;
       this.tickerOffset -= scrollSpeed * delta;
       const fullWidth = this.tickerText.width / 3;
       if (this.tickerOffset < -fullWidth) this.tickerOffset += fullWidth;
       this.tickerText.x = this.tickerOffset - 58;
+      this.tickerText.alpha = this.state === 'disconnected' ? 0.45 : 1;
     }
 
     const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * Math.PI * 2 * 1.2);

@@ -1,9 +1,10 @@
 import { getBuildingType } from './buildings.js';
+import { CharacterManager } from './characters.js';
 import { CityEnvironment } from './environment.js';
-import { PlotManager }     from './plot_manager.js';
-import { VehicleManager }  from './vehicles.js';
+import { PlotManager } from './plot_manager.js';
+import { VehicleManager } from './vehicles.js';
 
-const REF_WIDTH  = 1920;
+const REF_WIDTH = 1920;
 const REF_HEIGHT = 1080;
 
 function createRoad(y, height, color) {
@@ -22,31 +23,24 @@ function createRoad(y, height, color) {
 function buildPlotDefs() {
   const defs = [];
   for (let i = 0; i < 6; i += 1) defs.push({ id: `main_${i + 1}`, x: 250 + i * 285, y: 688 });
-  for (let i = 0; i < 3; i += 1) defs.push({ id: `mid_${i + 1}`,  x: 520 + i * 420, y: 888 });
+  for (let i = 0; i < 3; i += 1) defs.push({ id: `mid_${i + 1}`, x: 520 + i * 420, y: 888 });
   return defs;
 }
 
 /** Pixel city scene for live signal rendering. */
 export class CityScene {
-  /**
-   * @param {PIXI.Application} app
-   * @param {PIXI.Container}   world
-   * @param {SignalBus}        signalBus
-   *
-   * Note: the tooltip parameter has been removed. Tooltips are now driven by
-   * custom DOM events ('tooltip-show' / 'tooltip-hide') dispatched on
-   * document, keeping scene code free of DOM node references.
-   */
   constructor(app, world, signalBus) {
-    this.app        = app;
-    this.world      = world;
-    this.signalBus  = signalBus;
-    this.root       = new PIXI.Container();
-    this.actors     = [];
-    this.actorMeta  = [];
-    this.layoutApplied    = false;
+    this.app = app;
+    this.world = world;
+    this.signalBus = signalBus;
+    this.root = new PIXI.Container();
+    this.actors = [];
+    this.actorMeta = [];
+    this.layoutApplied = false;
     this.animationsPaused = false;
-    this.vehicleManager   = null;
+    this.vehicleManager = null;
+    this.characterManager = null;
+    this._layoutSignature = '';
   }
 
   async init() {
@@ -70,46 +64,58 @@ export class CityScene {
     this.root.addChild(midStrip);
 
     this.vehicleManager = new VehicleManager(this.root);
-    this.plotManager    = new PlotManager(this.root, buildPlotDefs());
+    this.characterManager = new CharacterManager(this.root, REF_WIDTH);
+    this.plotManager = new PlotManager(this.root, buildPlotDefs());
     this.world.addChild(this.root);
 
-    this.signalBus.subscribe('net_bytes_recv', (signal) => {
+    this.signalBus.subscribe('http_requests', (signal) => {
       if (this.vehicleManager) this.vehicleManager.onSignal(signal);
-    });
-
-    this.signalBus.subscribe('sky_time', (signal) => {
-      this.environment.timeOfDay        = Math.max(0, Math.min(Number(signal?.value ?? 0), 1));
-      this.environment.followSystemClock = false;
-    });
-
-    this.signalBus.subscribeAny(() => {
-      const layoutPlots = this.signalBus.getLayout()?.plots ?? [];
-      if (!this.layoutApplied && layoutPlots.length) {
-        this.applyLayout(layoutPlots);
-        this.layoutApplied = true;
+      const value = Number(signal?.value ?? 0);
+      if (this.characterManager && value > 3.5) {
+        this.characterManager.triggerSceneBeat('cafe', { busy: value > 6 });
       }
     });
 
-    const layoutPlots = this.signalBus.getLayout()?.plots ?? [];
-    if (!this.layoutApplied && layoutPlots.length) {
-      this.applyLayout(layoutPlots);
-      this.layoutApplied = true;
-    }
+    this.signalBus.subscribe('sky_time', (signal) => {
+      this.environment.timeOfDay = Math.max(0, Math.min(Number(signal?.value ?? 0), 1));
+      this.environment.followSystemClock = false;
+    });
+
+    this.signalBus.subscribe('active_streams', (signal) => {
+      const value = Number(signal?.value ?? 0);
+      if (this.characterManager && value > 0.45) {
+        this.characterManager.triggerSceneBeat('drive_in');
+      }
+    });
+
+    this.signalBus.subscribe('deploy_event', (signal) => {
+      if (this.characterManager && signal?.value) {
+        this.characterManager.triggerSceneBeat('deploy');
+      }
+    });
+
+    this.signalBus.subscribeAny(() => {
+      this._applyLayoutIfReady();
+    });
+
+    this._applyLayoutIfReady();
   }
 
-  /** Dim/brighten the sky while switching mode. */
   setSkyBrightness(multiplier) {
     this.environment.container.alpha = Math.max(0, Math.min(multiplier, 1));
   }
 
-  /** Freeze/resume signal-driven city animations in edit mode. */
   setAnimationPaused(paused) {
     this.animationsPaused = paused;
   }
 
   applyLayout(layoutPlots) {
+    const nextSignature = JSON.stringify(layoutPlots ?? []);
+    if (this._layoutSignature === nextSignature && this.actors.length > 0) return;
+    this._layoutSignature = nextSignature;
+
     this.actors.forEach((actor) => actor.destroy());
-    this.actors    = [];
+    this.actors = [];
     this.actorMeta = [];
     this.plotManager.setLayout(layoutPlots);
 
@@ -122,7 +128,7 @@ export class CityScene {
       const actor = new BuildingClass(this.app, plot, entry.style);
       actor.init();
       actor.container.eventMode = 'static';
-      actor.container.cursor    = 'pointer';
+      actor.container.cursor = 'pointer';
 
       this._attachTooltip(actor, entry);
 
@@ -138,46 +144,41 @@ export class CityScene {
 
       const meta = {
         actor,
-        signalId:             entry.signal,
-        label:                entry.valve?.label || entry.signal,
-        threshold:            Number(entry.valve?.alert_threshold ?? 0.85),
-        lastSignal:           null,
+        signalId: entry.signal,
+        label: entry.valve?.label || entry.signal,
+        threshold: Number(entry.valve?.alert_threshold ?? 0.85),
+        lastSignal: null,
         lastSignalReceivedAt: null,
       };
       this.actorMeta.push(meta);
 
       if (entry.signal) {
         this.signalBus.subscribe(entry.signal, (signal) => {
-          meta.lastSignal           = signal;
+          meta.lastSignal = signal;
           meta.lastSignalReceivedAt = Date.now() / 1000;
           if (!this.animationsPaused) actor.onSignal(signal);
         });
       }
     });
+
+    this.layoutApplied = true;
   }
 
-  /**
-   * Wire up tooltip events for a building actor.
-   *
-   * Dispatches 'tooltip-show' with an HTML payload and 'tooltip-hide'
-   * on the document.  main.js (or any other listener) handles rendering —
-   * the scene itself has no reference to any DOM element.
-   */
   _attachTooltip(actor, entry) {
     actor.container.on('pointerover', () => {
-      const signal    = entry.signal ? this.signalBus.getSignal(entry.signal) : null;
-      const label     = actor.constructor.label || entry.building;
-      const signalId  = entry.valve?.label || entry.signal || 'Unwired';
-      const rawVal    = signal?.value;
-      const pct       = (rawVal != null && Number.isFinite(Number(rawVal)))
+      const signal = entry.signal ? this.signalBus.getSignal(entry.signal) : null;
+      const label = actor.constructor.label || entry.building;
+      const signalId = entry.valve?.label || entry.signal || 'Unwired';
+      const rawVal = signal?.value;
+      const pct = (rawVal != null && Number.isFinite(Number(rawVal)))
         ? `${Math.round(Number(rawVal) * 100)}%`
         : String(rawVal ?? '--');
 
       document.dispatchEvent(new CustomEvent('tooltip-show', {
         detail: {
           html: `<div class="tt-label">${label}</div>`
-               + `<div class="tt-signal">${signalId}</div>`
-               + `<div class="tt-value">${pct}</div>`,
+            + `<div class="tt-signal">${signalId}</div>`
+            + `<div class="tt-value">${pct}</div>`,
         },
       }));
     });
@@ -186,9 +187,9 @@ export class CityScene {
       const pt = e.data.global;
       document.dispatchEvent(new CustomEvent('tooltip-show', {
         detail: {
-          x:    pt.x,
-          y:    pt.y,
-          html: null,   // position-only update — main.js skips re-render if html is null
+          x: pt.x,
+          y: pt.y,
+          html: null,
         },
       }));
     });
@@ -201,25 +202,32 @@ export class CityScene {
   update(delta) {
     this.environment.update(delta);
     if (this.vehicleManager) this.vehicleManager.update(delta);
+    if (this.characterManager) this.characterManager.update(delta);
     if (this.animationsPaused) return;
 
     const nowSec = Date.now() / 1000;
     this.actorMeta.forEach((meta) => {
-      const interval           = this.signalBus.getPollInterval(meta.signalId);
-      const signalTimestamp    = Number(meta.lastSignal?.timestamp ?? 0);
+      const interval = this.signalBus.getPollInterval(meta.signalId);
+      const signalTimestamp = Number(meta.lastSignal?.timestamp ?? 0);
       const freshnessTimestamp = signalTimestamp > 0 ? signalTimestamp : meta.lastSignalReceivedAt;
-      const disconnected       = freshnessTimestamp != null && (nowSec - freshnessTimestamp) > interval * 2;
-      const value              = Number(meta.lastSignal?.value ?? 0);
-      const active             = meta.lastSignal != null;
-      const alert              = active && Number.isFinite(value) && value > meta.threshold;
+      const disconnected = freshnessTimestamp != null && (nowSec - freshnessTimestamp) > interval * 2;
+      const value = Number(meta.lastSignal?.value ?? 0);
+      const active = meta.lastSignal != null;
+      const alert = active && Number.isFinite(value) && value > meta.threshold;
 
-      if (disconnected)    meta.actor.setAnimationState('disconnected');
-      else if (alert)      meta.actor.setAnimationState('alert');
-      else if (active)     meta.actor.setAnimationState('active');
-      else                 meta.actor.setAnimationState('idle');
+      if (disconnected) meta.actor.setAnimationState('disconnected');
+      else if (alert) meta.actor.setAnimationState('alert');
+      else if (active) meta.actor.setAnimationState('active');
+      else meta.actor.setAnimationState('idle');
     });
 
     this.actors.forEach((actor) => actor.update(delta));
+  }
+
+  _applyLayoutIfReady() {
+    const layoutPlots = this.signalBus.getLayout()?.plots ?? [];
+    if (!layoutPlots.length) return;
+    this.applyLayout(layoutPlots);
   }
 }
 

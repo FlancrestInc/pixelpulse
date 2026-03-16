@@ -45,7 +45,7 @@ export class SignalLibrary {
       'border-bottom:1px solid rgba(146,183,229,0.12)',
       'line-height:1.45', 'flex-shrink:0',
     ].join(';');
-    this.statusBar.textContent = 'Click a signal to select it, then click a plot on the city.';
+    this._setIdleStatus();
     this.panel.appendChild(this.statusBar);
 
     // Signal sections
@@ -96,8 +96,10 @@ export class SignalLibrary {
       this.panel.style.boxShadow   = '4px 0 24px rgba(255,180,0,0.2)';
 
       const typeLabel = this._pendingPortType ? ` (${this._pendingPortType})` : '';
-      this.statusBar.style.background = 'rgba(60,45,10,0.6)';
-      this.statusBar.innerHTML = `<span style="color:#ffd080;font-weight:700">⚡ Select a signal${typeLabel}</span><br><span style="color:rgba(255,220,100,0.8)">Compatible signals are highlighted below. Click one to connect it to <strong>${event.detail.plotId}</strong>.</span>`;
+      this._setStatusHtml(
+        `<span style="color:#ffd080;font-weight:700">⚡ Select a signal${typeLabel}</span><br><span style="color:rgba(255,220,100,0.8)">Compatible signals are highlighted below. Click one to connect it to <strong>${event.detail.plotId}</strong>.</span>`,
+        'rgba(60,45,10,0.6)',
+      );
       this.setSlide(1);
       this.render();
     });
@@ -139,12 +141,15 @@ export class SignalLibrary {
     const current = this.layoutSerializer.ensurePlot(plotId);
     if (current.building) this.layoutSerializer.setValve(plotId, defaultValve);
     document.dispatchEvent(new CustomEvent('layout-updated', { detail: { reason: 'signal-connect' } }));
-    this.statusBar.textContent = 'Click a signal to select it, then click a plot on the city.';
-    this.statusBar.style.color = '#8ab4d4';
-    this.statusBar.style.background = 'transparent';
+    this._setStatusHtml(
+      `<span style="color:#a8f0c6;font-weight:700">✓ Connected ${signal.id}</span><br><span style="color:rgba(195,235,215,0.82)">Now place a compatible building or open the valve on <strong>${plotId}</strong>.</span>`,
+      'rgba(18,52,34,0.55)',
+    );
     this.panel.style.borderRight = '1px solid rgba(146,183,229,0.25)';
     this.panel.style.boxShadow   = '4px 0 24px rgba(0,0,0,0.4)';
     this._pendingPortType = null;
+    window.clearTimeout(this._statusResetTimer);
+    this._statusResetTimer = window.setTimeout(() => this._setIdleStatus(), 3000);
   }
 
   _selectSignal(signal) {
@@ -162,14 +167,16 @@ export class SignalLibrary {
     // Toggle selection
     if (this.dragSignal?.id === signal.id) {
       this.dragSignal = null;
-      this.statusBar.textContent = 'Click a signal to select it, then click a plot on the city.';
-      this.statusBar.style.color = '#8ab4d4';
+      this._setIdleStatus();
       this.render();
       return;
     }
 
     this.dragSignal = signal;
-    this.statusBar.innerHTML = `<span style="color:#a8f0c6">✓ <strong>${signal.id}</strong> selected</span><br>Now click a plot slot on the city street.`;
+    this._setStatusHtml(
+      `<span style="color:#a8f0c6">✓ <strong>${signal.id}</strong> selected</span><br><span style="color:rgba(200,230,255,0.82)">Now click a plot slot on the city street or a zoned plot that matches.</span>`,
+      'rgba(24,48,64,0.55)',
+    );
     document.dispatchEvent(new CustomEvent('signal-highlight', { detail: { signalId: signal.id } }));
     this.render();
   }
@@ -289,6 +296,16 @@ export class SignalLibrary {
     });
     node.appendChild(remove);
     return node;
+  }
+
+  _setIdleStatus() {
+    this._setStatusHtml('Click a signal to select it, then click a plot on the city. If a plot is already zoned, use the pipe menu to configure its valve.', 'transparent');
+    this.statusBar.style.color = '#8ab4d4';
+  }
+
+  _setStatusHtml(html, background) {
+    this.statusBar.innerHTML = html;
+    this.statusBar.style.background = background;
   }
 
   async _openAdapterFlow() {
