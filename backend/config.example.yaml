@@ -3,7 +3,7 @@ server:
   port: 8000
 
 sky_driver:
-  mode: "clock"         # clock | cycle | signal
+  mode: "clock"
   cycle_minutes: 10
 
 signals:
@@ -16,6 +16,12 @@ signals:
     adapter: "system"
     metric: "memory_used"
     interval: 5
+
+  - id: "disk_used"
+    adapter: "system"
+    metric: "disk_used"
+    path: "/"
+    interval: 30
 
   - id: "weather_text"
     adapter: "weather"
@@ -42,3 +48,10 @@ signals:
     type: "gauge"
     max_value: 10
     interval: 10
+
+  - id: "deploy_event"
+    adapter: "webhook"
+    path: "/hooks/deploy-event"
+    type: "event"
+    value_key: "value"
+    interval: 1
