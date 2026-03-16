@@ -5,3 +5,5 @@ httpx
 PyYAML
 jsonpath-ng
 feedparser
+pytest
+pytest-asyncio
